@@ -1,0 +1,25 @@
+[package]
+name = "roleplayer-turnflow"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+roleplayer-core.workspace = true
+roleplayer-providers.workspace = true
+roleplayer-campaigns.workspace = true
+roleplayer-characters.workspace = true
+roleplayer-rulesets.workspace = true
+roleplayer-world-state.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+rand.workspace = true
+tracing.workspace = true
+tauri = { workspace = true, optional = true }
+
+[features]
+default = []
+tauri = ["dep:tauri"]

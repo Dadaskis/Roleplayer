@@ -1,6 +1,9 @@
 # --- Dependencies ---
 node_modules/
 
+# --- Reference projects (read-only, not part of the build) ---
+__ref__/
+
 # --- Build outputs ---
 dist/
 dist-ssr/
@@ -69,3 +72,4 @@ yarn-debug.log*
 yarn-error.log*
 .eslintcache
 .vite/
+__ref__

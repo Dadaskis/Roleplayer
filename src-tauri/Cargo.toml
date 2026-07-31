@@ -1,0 +1,32 @@
+[package]
+name = "roleplayer-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "roleplayer_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+tauri = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "std"] }
+chrono.workspace = true
+directories = "5"
+
+roleplayer-core.workspace = true
+roleplayer-providers = { workspace = true, features = ["tauri"] }
+roleplayer-campaigns = { workspace = true, features = ["tauri"] }
+roleplayer-characters = { workspace = true, features = ["tauri"] }
+roleplayer-rulesets = { workspace = true, features = ["tauri"] }
+roleplayer-world-state = { workspace = true, features = ["tauri"] }
+roleplayer-turnflow = { workspace = true, features = ["tauri"] }
+roleplayer-memories = { workspace = true, features = ["tauri"] }
+roleplayer-search = { workspace = true, features = ["tauri"] }

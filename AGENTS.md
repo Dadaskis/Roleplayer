@@ -49,21 +49,26 @@ If a command does not exist yet (Phase 0 not done), say so rather than guessing.
 
 The app is a **modular monolith**: one deployable app, many small feature modules. Each module owns its slice end-to-end (domain logic, service, storage, IPC commands, frontend half). Modules stack on a thin `core` layer that holds the shared seams. This follows a `modules/` convention proven in a prior reference project (the example path can be asked from the user).
 
+The `__ref__/` folder contains reference projects with interesting features the developer wants to borrow from. It is a **read-only reference, not part of the build** — never import from it, never copy wholesale, and ask the user before assuming anything from it.
+
 ### Rust backend — Cargo workspace (one crate per module, boundaries enforced at compile time)
 
 ```
 Roleplayer/
   Cargo.toml            # workspace: members = app + core + modules/*
-  src/                  # app crate = composition root
-    lib.rs / main.rs    # wires modules, registers Tauri commands, runs migrations
+  src-tauri/            # app crate = composition root (Tauri 2 convention)
+    src/lib.rs          # wires modules, registers Tauri commands, runs migrations
+    src/main.rs         # entrypoint -> roleplayer_app::run()
+    tauri.conf.json     # window + bundle config
+    capabilities/       # Tauri permission capabilities
   core/                 # shared foundation — no feature logic
     src/
-      storage.rs        # trait Storage
+      storage.rs        # trait Storage + SQLite Database impl
       llm.rs            # trait LLMProvider, ChatMessage, ContentBlock
       game_command.rs   # trait GameCommand
       eventbus.rs       # typed event bus
       errors.rs         # shared error types
-      migrations/       # versioned SQL, one file per version
+      migrations.rs     # versioned SQL, one migration per version
   modules/
     campaigns/          # module = its own crate
     characters/
@@ -91,7 +96,7 @@ modules/<module>/
   tests/                # module-level tests
 ```
 
-Module crates must not depend on `tauri` for their logic; `commands.rs` is gated behind a cargo feature so modules stay testable without a webview.
+Module crates must not depend on `tauri` for their logic; `commands.rs` is gated behind a cargo feature so modules stay testable without a webview. The workspace `default-members` are `core` + `modules/*` so `cargo test` at the root runs headless without compiling the Tauri app crate; the app crate builds via `cargo check -p roleplayer-app` or `npm run tauri dev`.
 
 ### Frontend (React/TS) — mirrors the Rust module names
 

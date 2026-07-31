@@ -1,0 +1,23 @@
+[package]
+name = "roleplayer-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+roleplayer-core.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+keyring.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tauri = { workspace = true, optional = true }
+
+[features]
+default = []
+tauri = ["dep:tauri"]

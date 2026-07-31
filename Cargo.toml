@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "core",
+    "modules/campaigns",
+    "modules/characters",
+    "modules/rulesets",
+    "modules/world_state",
+    "modules/turnflow",
+    "modules/providers",
+    "modules/memories",
+    "modules/search",
+    "src-tauri",
+]
+# Headless verification runs core + modules without compiling the Tauri app crate.
+default-members = [
+    "core",
+    "modules/campaigns",
+    "modules/characters",
+    "modules/rulesets",
+    "modules/world_state",
+    "modules/turnflow",
+    "modules/providers",
+    "modules/memories",
+    "modules/search",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+roleplayer-core = { path = "core" }
+roleplayer-providers = { path = "modules/providers" }
+roleplayer-campaigns = { path = "modules/campaigns" }
+roleplayer-characters = { path = "modules/characters" }
+roleplayer-rulesets = { path = "modules/rulesets" }
+roleplayer-world-state = { path = "modules/world_state" }
+roleplayer-turnflow = { path = "modules/turnflow" }
+roleplayer-memories = { path = "modules/memories" }
+roleplayer-search = { path = "modules/search" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite_migration = "1"
+async-trait = "0.1"
+tracing = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+keyring = { version = "3", features = ["windows-native"] }
+futures = "0.3"
+tauri = { version = "2" }
+tauri-build = "2"
+
+[profile.dev.package."*"]
+opt-level = 1
+
+[profile.dev]
+split-debuginfo = "unpacked"

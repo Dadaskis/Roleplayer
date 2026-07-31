@@ -1,0 +1,41 @@
+{
+  "name": "roleplayer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src-web --ext .ts,.tsx",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5",
+    "@tauri-apps/api": "^2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^6",
+    "@testing-library/react": "^16",
+    "@testing-library/user-event": "^14",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@typescript-eslint/eslint-plugin": "^7",
+    "@typescript-eslint/parser": "^7",
+    "@vitejs/plugin-react": "^4",
+    "eslint": "^8",
+    "eslint-plugin-react-hooks": "^4",
+    "jsdom": "^24",
+    "prettier": "^3",
+    "typescript": "^5",
+    "vite": "^5",
+    "vitest": "^2"
+  }
+}
