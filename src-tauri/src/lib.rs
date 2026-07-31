@@ -95,6 +95,8 @@ fn data_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
             .ok_or("could not resolve the platform data directory")?;
     let dir = project_dirs.data_dir().to_path_buf();
     std::fs::create_dir_all(&dir)?;
+    // Pre-create `logs/` here (not in init_logging) so the data dir is fully
+    // scaffolded before logging or the panic hook try to write into it.
     let logs_dir = dir.join("logs");
     std::fs::create_dir_all(&logs_dir)?;
     Ok(dir)
@@ -110,6 +112,8 @@ fn init_logging(data_dir: &std::path::Path) {
     use tracing_subscriber::fmt::writer::MakeWriterExt;
     use tracing_subscriber::EnvFilter;
 
+    // Honour `RUST_LOG` when set (a way to debug a packaged app), and fall
+    // back to info level otherwise so the default logs stay useful (§5.13).
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));
     let logs_dir = data_dir.join("logs");
@@ -134,6 +138,9 @@ fn init_logging(data_dir: &std::path::Path) {
     };
 
     // In debug, tee to the console; in release, file-only.
+    // `and` (MakeWriterExt) writes each line to both targets at once; in
+    // release the windows subsystem has no console, so the stdout half of
+    // the tee is a silent no-op and the file is the only effective sink.
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(log_file.and(std::io::stdout));
@@ -155,8 +162,13 @@ fn install_panic_hook(logs_dir: &std::path::Path) {
 
     let panic_log_path = logs_dir.join("panic.log");
     tracing::info!("panic hook will log to {}", panic_log_path.display());
+    // Take the current hook first so it can be chained at the end — the
+    // default stderr output stays intact in dev instead of being replaced.
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
+        // Panic payloads are `&str` or `String` in practice; try both so the
+        // message is never lost, and fall back to a fixed string if the
+        // payload is some other type.
         let message = panic_info
             .payload()
             .downcast_ref::<&str>()
@@ -171,11 +183,15 @@ fn install_panic_hook(logs_dir: &std::path::Path) {
         let backtrace = std::backtrace::Backtrace::force_capture();
         let timestamp = roleplayer_core::now_rfc3339();
 
+        // Append, never truncate: panic.log must accumulate across runs so a
+        // crash can be diagnosed afterwards from the whole history.
         if let Ok(mut file) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&panic_log_path)
         {
+            // A panic hook must never panic, and the default hook below still
+            // reports to stderr, so a failed write is deliberately swallowed.
             let _ = writeln!(
                 file,
                 "=== PANIC {timestamp} ===\nlocation: {location}\nmessage: {message}\n{backtrace}\n"
@@ -190,12 +206,17 @@ fn install_panic_hook(logs_dir: &std::path::Path) {
 /// when the current file has outgrown [`LOG_MAX_BYTES`].
 fn rotate_logs(logs_dir: &std::path::Path) {
     let current = logs_dir.join("roleplayer.log");
+    // A missing file reads as size 0 (`unwrap_or(0)`), i.e. "nothing to
+    // rotate", which keeps the very first run error-free.
     let current_size =
         std::fs::metadata(&current).map(|meta| meta.len()).unwrap_or(0);
     if current_size < LOG_MAX_BYTES {
         return;
     }
     // Remove the oldest slot, then shift newer files down one slot.
+    // Order matters: `.3` must be freed before `.2 -> .3` renames into it.
+    // Every step is best-effort (`let _`): a missing intermediate is normal
+    // on the first rotation, and a partial chain is an acceptable state.
     let _ = std::fs::remove_file(logs_dir.join("roleplayer.log.3"));
     let _ = std::fs::rename(
         logs_dir.join("roleplayer.log.2"),
@@ -212,6 +233,9 @@ fn rotate_logs(logs_dir: &std::path::Path) {
 /// Forward every event bus message to the webview as `turn-event`.
 fn forward_events(app: &tauri::App, bus: EventBus) {
     let handle = app.handle().clone();
+    // Use Tauri's runtime handle, not a bare `tokio::spawn`: the app's
+    // runtime is created lazily, so `tokio::spawn` from here could panic
+    // with "no reactor running" — the exact crash the hook above records.
     tauri::async_runtime::spawn(async move {
         let mut receiver = bus.subscribe();
         loop {
@@ -250,6 +274,10 @@ pub fn run() {
     let result = tauri::Builder::default()
         .setup(move |app| {
             let bus = EventBus::new();
+            // Re-box through a String so the `?` yields a `Box<dyn Error>`
+            // that is guaranteed Send + Sync and carries a stable message;
+            // this is a startup-path failure reported once, so nothing but
+            // the message needs to survive.
             let state = AppState::bootstrap(&data_dir, bus.clone()).map_err(
                 |error| Box::<dyn std::error::Error>::from(error.to_string()),
             )?;
@@ -267,6 +295,10 @@ pub fn run() {
             app.manage(state.memories.clone());
             app.manage(state.search.clone());
             app.manage(state.bus.clone());
+            // Managing the whole `AppState` too is belt-and-braces: module
+            // commands resolve the concrete services managed above, and this
+            // keeps `AppState` itself registered for any in-crate handler
+            // that wants it as a `State` argument.
             app.manage(state);
 
             tracing::info!("Roleplayer started");

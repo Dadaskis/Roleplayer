@@ -43,6 +43,10 @@ pub struct CommandContext {
 /// Implementations live in feature modules; the `turnflow` module registers
 /// them with the provider. Adding a command is "implement + register", never
 /// an edit to core (§5.3 of AGENTS.md).
+///
+/// `Send + Sync` is required because commands are invoked from the async turn
+/// flow, which may run them on any worker thread while the registry is shared
+/// behind an `Arc` across the whole runtime.
 pub trait GameCommand: Send + Sync {
     /// Stable tool name the model uses to call it.
     fn id(&self) -> &str;

@@ -7,14 +7,19 @@ use rusqlite::Row;
 use crate::domain::Ruleset;
 
 fn map_ruleset(row: &Row<'_>) -> rusqlite::Result<Ruleset> {
+    // Translate one SQLite row into a domain entity; columns are fetched by
+    // name so the mapping survives column reordering.
     Ok(Ruleset {
         id: row.get("id")?,
         name: row.get("name")?,
         system_prompt: row.get("system_prompt")?,
+        // world_rules is JSON text; degrade a corrupt value to `{}` rather
+        // than failing the whole read (§5.10).
         world_rules: row
             .get::<_, String>("world_rules")?
             .parse()
             .unwrap_or(serde_json::Value::Object(Default::default())),
+        // SQLite has no boolean type; is_builtin is stored as 0/1 integer.
         is_builtin: row.get::<_, i64>("is_builtin")? != 0,
         created_at: row.get("created_at")?,
     })
@@ -26,6 +31,8 @@ pub fn insert<S: Storage + ?Sized>(
     ruleset: &Ruleset,
 ) -> Result<()> {
     let world_rules = ruleset.world_rules.to_string();
+    // Placeholders ?1..?6 bind in column order; binding, never string-building,
+    // keeps user data out of the SQL text (§5.16).
     storage
         .execute(
             "INSERT INTO rulesets (id, name, system_prompt, world_rules, is_builtin, created_at)
@@ -35,16 +42,21 @@ pub fn insert<S: Storage + ?Sized>(
                 &ruleset.name,
                 &ruleset.system_prompt,
                 &world_rules,
+                // The bool is widened to an integer column; 1 = built-in preset.
                 &(ruleset.is_builtin as i64),
                 &ruleset.created_at,
             ],
         )
+        // Row count is uninteresting for an insert; map to unit.
         .map(|_changed| ())
 }
 
 /// List all rulesets, built-ins first then newest.
 pub fn list<S: Storage + ?Sized>(storage: &S) -> Result<Vec<Ruleset>> {
     storage.query_vec(
+        // is_builtin DESC pins seeded presets on top; created_at DESC puts
+        // the newest custom ruleset first among the rest.
+        // The full column set matches map_ruleset's by-name fetches.
         "SELECT id, name, system_prompt, world_rules, is_builtin, created_at
          FROM rulesets ORDER BY is_builtin DESC, created_at DESC",
         &[],
@@ -57,6 +69,7 @@ pub fn get<S: Storage + ?Sized>(
     storage: &S,
     ruleset_id: &str,
 ) -> Result<Option<Ruleset>> {
+    // The id filter is bound (?1); query_row yields None when no row matches.
     storage.query_row(
         "SELECT id, name, system_prompt, world_rules, is_builtin, created_at
          FROM rulesets WHERE id = ?1",
@@ -71,6 +84,8 @@ pub fn update<S: Storage + ?Sized>(
     ruleset: &Ruleset,
 ) -> Result<Option<Ruleset>> {
     let world_rules = ruleset.world_rules.to_string();
+    // The is_builtin = 0 guard lives in the SQL, not the service, so the DB
+    // enforces built-in protection even if a future caller forgets to check.
     let changed = storage.execute(
         "UPDATE rulesets
          SET name = ?1, system_prompt = ?2, world_rules = ?3
@@ -81,6 +96,8 @@ pub fn update<S: Storage + ?Sized>(
         // Either the id is unknown or it is a protected built-in.
         return Ok(None);
     }
+    // Re-read the row so the caller gets the persisted truth, including any
+    // column coercions SQLite applied on write.
     get(storage, &ruleset.id)
 }
 
@@ -89,10 +106,15 @@ pub fn delete<S: Storage + ?Sized>(
     storage: &S,
     ruleset_id: &str,
 ) -> Result<bool> {
+    // Guard in SQL keeps built-in presets immutable at the storage layer,
+    // so protection holds even if a future service forgets to check.
+    // The is_builtin = 0 guard in SQL makes the delete a no-op for presets;
+    // changed == 0 either means the id is unknown or it is protected.
     let changed = storage.execute(
         "DELETE FROM rulesets WHERE id = ?1 AND is_builtin = 0",
         &[&ruleset_id],
     )?;
+    // More than zero changed rows means a custom ruleset was actually removed.
     Ok(changed > 0)
 }
 

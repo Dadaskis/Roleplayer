@@ -33,12 +33,22 @@ pub enum AppError {
 /// Result alias used across the app; services map their own errors into this.
 pub type Result<T> = std::result::Result<T, AppError>;
 
+/// Convert a `rusqlite` failure into the shared taxonomy.
+///
+/// The detail is flattened to a string on purpose: the `rusqlite` error type
+/// must never leak past the storage seam (§5.3 of AGENTS.md), and the UI
+/// boundary only renders the summary anyway.
 impl From<rusqlite::Error> for AppError {
     fn from(error: rusqlite::Error) -> Self {
         AppError::Storage(error.to_string())
     }
 }
 
+/// Convert a JSON parse failure into the shared taxonomy.
+///
+/// A `serde_json` error here means persisted or provider data was malformed
+/// (untrusted input, §5.10) — a domain concern, not a storage or transport
+/// one — so it is mapped to `Domain`.
 impl From<serde_json::Error> for AppError {
     fn from(error: serde_json::Error) -> Self {
         AppError::Domain(format!("invalid JSON data: {error}"))
@@ -60,11 +70,20 @@ pub struct ErrorDto {
     pub correlation_id: String,
 }
 
+/// Build the UI DTO from a taxonomy error.
+///
+/// Every failed command funnels through this: the raw error is what gets
+/// logged (the detail), and the DTO is the only thing the UI ever sees.
 impl From<AppError> for ErrorDto {
     fn from(error: AppError) -> Self {
         ErrorDto {
             message: error.to_string(),
+            // Only provider errors are plausibly transient (network blips,
+            // timeouts, rate limits). Retrying a storage/domain/ipc failure
+            // would just repeat the same deterministic result.
             retryable: matches!(error, AppError::Provider(_)),
+            // A fresh id per failure lets the user quote it and the logs be
+            // grepped for that id to reconstruct the full context (§5.13).
             correlation_id: crate::new_id(),
         }
     }

@@ -22,6 +22,8 @@ use roleplayer_world_state::service::WorldStateService;
 #[tokio::test]
 async fn real_opencode_go_turn_completes() {
     // Without a key this is a graceful skip, not a failure.
+    // An unset, empty, or whitespace-only variable all count as "no key",
+    // so CI environments with no secret pass quietly.
     if std::env::var("OPENCODE_API_KEY")
         .map(|key| key.trim().is_empty())
         .unwrap_or(true)
@@ -30,6 +32,8 @@ async fn real_opencode_go_turn_completes() {
         return;
     }
 
+    // In-memory storage + the real bus, same as the mock test: the only
+    // difference is the provider actually talks to the network.
     let storage = Arc::new(Database::open_in_memory().expect("in-memory db"));
     let bus = EventBus::new();
     let mut events = bus.subscribe();
@@ -39,6 +43,7 @@ async fn real_opencode_go_turn_completes() {
         .create(NewCampaign {
             name: "Real Provider Smoke".to_string(),
             description: String::new(),
+            // Built-in ruleset fallback, exactly like a fresh user install.
             ruleset_id: None,
         })
         .expect("create campaign");
@@ -56,6 +61,8 @@ async fn real_opencode_go_turn_completes() {
         .get_default()
         .map(|provider| provider.id().to_string())
         .expect("a default provider");
+    // If this assertion fires, the key-selection logic regressed: with a key
+    // present the default must be the real provider, never the mock.
     assert_eq!(
         default_id, "opencode-go",
         "default must be the real provider here"
@@ -73,6 +80,8 @@ async fn real_opencode_go_turn_completes() {
         bus.clone(),
     ));
 
+    // The prompt invites a tool call but doesn't require one: the assertion
+    // below only demands narrative prose, whatever the model chose to do.
     let prepared = turnflow
         .prepare_turn(
             &campaign.id,
@@ -85,6 +94,8 @@ async fn real_opencode_go_turn_completes() {
     });
 
     // The real model may take a while; be generous.
+    // Unlike the mock test, failures surface as TurnError events; any such
+    // event means the stack misbehaved with a real provider, so fail loudly.
     let mut completed = false;
     loop {
         match tokio::time::timeout(Duration::from_secs(180), events.recv())
@@ -94,6 +105,8 @@ async fn real_opencode_go_turn_completes() {
                 completed = true;
                 break;
             }
+            // A TurnError here is the strongest signal: a real provider made
+            // the loop fail, so the test must not pass quietly.
             Ok(Ok(AppEvent::TurnError { message, .. })) => {
                 panic!("real provider turn failed: {message}");
             }
@@ -104,9 +117,11 @@ async fn real_opencode_go_turn_completes() {
     }
     assert!(completed, "real provider turn never completed (timeout)");
 
+    // Persistence proof: at minimum the user action and one GM reply exist.
     let messages =
         turnflow.list_messages(&campaign.id, 100).expect("list messages");
     assert!(messages.len() >= 2, "expected at least a user + GM message");
+    // Collect every text block from assistant rows into one narrative string.
     let gm_text: String = messages
         .iter()
         .filter(|message| message.role == Role::Assistant)
@@ -120,10 +135,13 @@ async fn real_opencode_go_turn_completes() {
         })
         .collect::<Vec<_>>()
         .join(" ");
+    // A real model could reply with only tool calls; this guards that the
+    // final message still carries actual narrative prose for the user.
     assert!(
         !gm_text.trim().is_empty(),
         "GM produced no narrative text in a real turn"
     );
+    // A short success line so a human running the test sees what happened.
     eprintln!(
         "real provider turn OK — GM replied with {} chars",
         gm_text.len()

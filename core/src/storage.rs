@@ -147,6 +147,9 @@ impl Storage for Database {
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
+        // Holding the mutex guard for the whole transaction is the point:
+        // no other call can interleave on this connection, which is what
+        // makes single-writer discipline enforceable (§5.16 of AGENTS.md).
         let mut guard = self.lock()?;
         let transaction = guard.transaction()?;
         match work(&transaction) {

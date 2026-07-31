@@ -11,6 +11,8 @@
 //! API keys live in the OS keyring (or the `OPENCODE_API_KEY` env var), never
 //! in the database (§5.4).
 
+// Sub-modules compile unconditionally: they carry no Tauri dependency, so the
+// adapter + registry logic stays testable headless (§5.11).
 pub mod domain;
 pub mod mock;
 pub mod openai;
@@ -19,9 +21,13 @@ pub mod secrets;
 pub mod service;
 pub mod storage;
 
+// Commands are feature-gated behind `tauri` so the module compiles and tests
+// headless without dragging in the webview (and its crate graph, §5.11).
 #[cfg(feature = "tauri")]
 pub mod commands;
 
+// Re-export the public surface so consumers import the module name rather than
+// reaching into sub-modules; the internals stay private (§5.6).
 pub use domain::{ProviderConfig, ProviderInfo, ProviderKind};
 pub use mock::MockProvider;
 pub use openai::OpenAiCompatibleProvider;

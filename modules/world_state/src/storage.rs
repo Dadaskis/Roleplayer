@@ -20,8 +20,11 @@ pub fn get_document<S: Storage + ?Sized>(
         .query_row(
             "SELECT document FROM world_state WHERE campaign_id = ?1",
             &[&campaign_id],
+            // Fetch as raw text first; the JSON parse happens in the map below.
             |row| row.get::<_, String>(0),
         )
+        // The document is JSON text; parse it, treating an absent row or a
+        // corrupt payload as an empty object so reads never fail (§5.10).
         .map(|document| {
             document.and_then(|raw| raw.parse().ok()).unwrap_or_else(|| {
                 serde_json::Value::Object(Default::default())
@@ -43,10 +46,17 @@ pub fn set_key<S: Storage + ?Sized>(
     message_id: Option<&str>,
 ) -> Result<(serde_json::Value, serde_json::Value)> {
     storage.with_transaction(|connection| {
+        // Every read/write below shares this one transaction connection, so the
+        // read-modify-write cannot race another writer (single-writer §5.16).
         let mut document = load_document(connection, campaign_id)?;
+        // Read the key's current value BEFORE mutating, so the audit trail can
+        // record what the change replaced (anti-hallucination, §4.6).
+        // A missing key snapshots as Null (the canonical "did not exist").
         let before_value =
             document.get(key).cloned().unwrap_or(serde_json::Value::Null);
 
+        // The document is expected to be a JSON object; refuse (typed error)
+        // instead of panicking if a corrupt row holds something else.
         document
             .as_object_mut()
             .ok_or_else(|| {
@@ -55,8 +65,12 @@ pub fn set_key<S: Storage + ?Sized>(
                 )
             })?
             .insert(key.to_string(), value.clone());
+        // The after-snapshot is exactly what was just written; both sides of
+        // the before/after pair are captured for the audit row.
         let after_value = value.clone();
 
+        // Persist the mutated document and the audit row in the SAME
+        // transaction so a failure rolls both back (no phantom history).
         persist_document(connection, campaign_id, &document)?;
         record_change(
             connection,
@@ -67,6 +81,7 @@ pub fn set_key<S: Storage + ?Sized>(
             &after_value,
             message_id,
         )?;
+        // Hand the caller both snapshots; the service logs/echoes them.
         Ok((before_value, after_value))
     })
 }
@@ -84,10 +99,16 @@ pub fn remove_key<S: Storage + ?Sized>(
     message_id: Option<&str>,
 ) -> Result<(serde_json::Value, serde_json::Value)> {
     storage.with_transaction(|connection| {
+        // Same transactional discipline as set_key: one connection owns the
+        // whole read-modify-write, so no other writer can interleave.
         let mut document = load_document(connection, campaign_id)?;
+        // Same read-before-mutate dance as set_key: capture what we're about
+        // to delete for the audit trail.
         let before_value =
             document.get(key).cloned().unwrap_or(serde_json::Value::Null);
 
+        // remove() returns the displaced value (or None if the key was never
+        // set); the object check protects against a non-object corrupt row.
         let removed = document
             .as_object_mut()
             .ok_or_else(|| {
@@ -98,6 +119,8 @@ pub fn remove_key<S: Storage + ?Sized>(
             .remove(key);
 
         let after_value = serde_json::Value::Null;
+        // Removal always yields Null after; the removed value is returned for
+        // the audit trail, or Null when the key did not exist.
         persist_document(connection, campaign_id, &document)?;
         record_change(
             connection,
@@ -108,6 +131,8 @@ pub fn remove_key<S: Storage + ?Sized>(
             &after_value,
             message_id,
         )?;
+        // before is what the key held (or Null); removed is the actual value
+        // that left the document, which the caller reports for the audit trail.
         Ok((before_value, removed.unwrap_or(serde_json::Value::Null)))
     })
 }
@@ -120,6 +145,8 @@ pub fn insert_change<S: Storage + ?Sized>(
     let args = change.args.to_string();
     let before = change.before_value.to_string();
     let after = change.after_value.to_string();
+    // Placeholders ?1..?8 bind in column order; binding, never string-building,
+    // keeps user data out of the SQL text (§5.16).
     storage
         .execute(
             "INSERT INTO state_changes
@@ -132,10 +159,12 @@ pub fn insert_change<S: Storage + ?Sized>(
                 &args,
                 &before,
                 &after,
+                // Option<String> binds as NULL when no message triggered it.
                 &change.message_id,
                 &change.created_at,
             ],
         )
+        // Row count is uninteresting for an insert; map to unit.
         .map(|_changed| ())
 }
 
@@ -146,6 +175,8 @@ pub fn list_changes<S: Storage + ?Sized>(
     limit: i64,
 ) -> Result<Vec<StateChange>> {
     storage.query_vec(
+        // Newest-first audit history; LIMIT is bound so a hostile caller cannot
+        // ask for an unbounded result set.
         "SELECT id, campaign_id, tool, args, before_value, after_value, message_id, created_at
          FROM state_changes WHERE campaign_id = ?1
          ORDER BY created_at DESC LIMIT ?2",
@@ -155,6 +186,9 @@ pub fn list_changes<S: Storage + ?Sized>(
 }
 
 fn map_change(row: &Row<'_>) -> rusqlite::Result<StateChange> {
+    // Translate one audit row into a domain entity; the three JSON columns all
+    // go through the shared tolerant parse so one corrupt snapshot does not
+    // sink the whole history read.
     Ok(StateChange {
         id: row.get("id")?,
         campaign_id: row.get("campaign_id")?,
@@ -174,6 +208,8 @@ fn map_change(row: &Row<'_>) -> rusqlite::Result<StateChange> {
 /// Parse a stored JSON column, falling back to `{}` on malformed data so a
 /// corrupt row degrades instead of crashing the UI (§5.10).
 fn parse_json_or_default(raw: &str) -> serde_json::Value {
+    // Parse the stored JSON text; on malformed data yield `{}` so a single
+    // corrupt row degrades instead of failing the whole audit read (§5.10).
     raw.parse()
         .unwrap_or_else(|_| serde_json::Value::Object(Default::default()))
 }
@@ -183,13 +219,17 @@ fn load_document(
     connection: &Connection,
     campaign_id: &str,
 ) -> Result<serde_json::Value> {
+    // Reads through the transaction's connection, so this load sees whatever
+    // this transaction has already written (read-your-writes within a tx).
     let raw: Option<String> = connection
         .query_row(
             "SELECT document FROM world_state WHERE campaign_id = ?1",
             params![campaign_id],
             |row| row.get(0),
         )
+        // `.optional()` maps "no such row" (QueryReturnedNoRows) to None.
         .optional()?;
+    // Absent row or malformed JSON both degrade to an empty document (§5.10).
     Ok(raw
         .and_then(|value| value.parse().ok())
         .unwrap_or_else(|| serde_json::Value::Object(Default::default())))
@@ -202,6 +242,9 @@ fn persist_document(
 ) -> Result<()> {
     let raw = document.to_string();
     let updated_at = now_rfc3339();
+    // Upsert so the first write creates the row and later writes overwrite it
+    // in one statement — no separate exists-check, and it stays inside the
+    // caller's transaction (single-writer discipline, §5.16).
     connection
         .execute(
             "INSERT INTO world_state (campaign_id, document, updated_at) VALUES (?1, ?2, ?3)
@@ -209,10 +252,14 @@ fn persist_document(
                                                       updated_at = excluded.updated_at",
             params![campaign_id, raw, updated_at],
         )
+        // The changed-row count is irrelevant to the caller; map to unit.
         .map(|_changed| ())
+        // Translate the low-level rusqlite error into the shared taxonomy so it
+        // never escapes this seam as a provider-specific type (§5.3).
         .map_err(roleplayer_core::errors::AppError::from)
 }
 
+/// Build an audit `StateChange` with a fresh id/timestamp and insert it.
 fn record_change(
     connection: &Connection,
     campaign_id: &str,
@@ -222,6 +269,8 @@ fn record_change(
     after: &serde_json::Value,
     message_id: Option<&str>,
 ) -> Result<()> {
+    // Build a fresh audit entry with a new id + timestamp; the before/after
+    // snapshots were captured by the caller around the mutation.
     let change = StateChange {
         id: new_id(),
         campaign_id: campaign_id.to_string(),
@@ -235,6 +284,7 @@ fn record_change(
     insert_change_on(connection, &change)
 }
 
+/// Insert an audit row on a raw connection (shared by both write paths).
 fn insert_change_on(
     connection: &Connection,
     change: &StateChange,
@@ -248,6 +298,7 @@ fn insert_change_on(
                 change.id,
                 change.campaign_id,
                 change.tool,
+                // The JSON snapshots are serialized inline at bind time.
                 change.args.to_string(),
                 change.before_value.to_string(),
                 change.after_value.to_string(),
@@ -255,6 +306,7 @@ fn insert_change_on(
                 change.created_at
             ],
         )
+        // Same unit-mapping and error-translation as persist_document.
         .map(|_changed| ())
         .map_err(roleplayer_core::errors::AppError::from)
 }
@@ -265,6 +317,8 @@ mod tests {
     use roleplayer_core::storage::Database;
 
     fn seed_campaign(storage: &Database, campaign_id: &str) {
+        // The world_state FK requires a parent campaign row; seed one with
+        // the minimal columns the schema accepts.
         storage
             .execute(
                 "INSERT INTO campaigns (id, name, description, created_at, updated_at)
@@ -279,6 +333,7 @@ mod tests {
         let storage = Database::open_in_memory().expect("in-memory db");
         seed_campaign(&storage, "camp-1");
 
+        // First write: the key did not exist, so before must be Null.
         let (before, after) = set_key(
             &storage,
             "camp-1",
@@ -310,9 +365,11 @@ mod tests {
             None,
         )
         .expect("set key again");
+        // The second write's before is the first write's value.
         assert_eq!(before, serde_json::json!("burning"));
         assert_eq!(after, serde_json::json!("flooded"));
 
+        // The stored document reflects the newest value.
         let document = get_document(&storage, "camp-1").expect("get document");
         assert_eq!(document["room"], serde_json::json!("flooded"));
     }
@@ -342,9 +399,11 @@ mod tests {
             None,
         )
         .expect("remove key");
+        // Removal returns the displaced value as both before and removed.
         assert_eq!(before, serde_json::json!("alive"));
         assert_eq!(removed, serde_json::json!("alive"));
 
+        // The document no longer contains the key at all.
         let document = get_document(&storage, "camp-1").expect("get document");
         assert!(document.get("king").is_none());
     }

@@ -22,6 +22,10 @@ pub mod llm;
 pub mod migrations;
 pub mod storage;
 
+// Re-export the most-used shared types at the crate root so modules write
+// `roleplayer_core::Capabilities` instead of deep paths, and so the public
+// surface is one stable list — the IPC contract and module imports depend on
+// these names staying put.
 pub use errors::{AppError, Result};
 pub use llm::{
     Capabilities, ChatMessage, CompletionRequest, CompletionResponse,

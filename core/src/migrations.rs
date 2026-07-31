@@ -24,6 +24,8 @@ pub fn migrations() -> Migrations<'static> {
 /// - `state_changes` is the anti-hallucination audit trail (§4.6 of PLAN.md).
 /// - `messages_fts` keeps a full-text index over the transcript for search.
 const SCHEMA_V1: &str = r#"
+-- `meta` is the version ledger rusqlite_migration reads/writes: it stores
+-- the applied schema version so only missing migrations run on next open.
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -69,6 +71,8 @@ CREATE TABLE messages (
     created_at  TEXT NOT NULL
 );
 
+-- Speeds the transcript fetch that drives the context builder — a known hot
+-- path (§5.12 of AGENTS.md), so the index earns its write cost.
 CREATE INDEX idx_messages_campaign ON messages(campaign_id, turn_index);
 
 CREATE TABLE world_state (
@@ -108,12 +112,18 @@ CREATE TABLE provider_cfg (
     created_at    TEXT NOT NULL
 );
 
+-- FTS5 external-content table: the index lives here while the source text
+-- stays in `messages`. `content_rowid` joins on the implicit integer
+-- `rowid` of the TEXT-keyed messages table (FTS requires an integer key).
 CREATE VIRTUAL TABLE messages_fts USING fts5(
     campaign_id, role, content,
     content='messages',
     content_rowid='rowid'
 );
 
+-- FTS5 external-content tables have no built-in update path, so every
+-- change is expressed as a delete plus an insert; `messages_fts` given as
+-- the first column selects the special 'delete' command.
 CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
     INSERT INTO messages_fts(rowid, campaign_id, role, content)
     VALUES (new.rowid, new.campaign_id, new.role, new.content);
@@ -125,6 +135,7 @@ CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
 END;
 
 CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
+    -- 'delete' the old indexed row, then insert the new one in its place.
     INSERT INTO messages_fts(messages_fts, rowid, campaign_id, role, content)
     VALUES ('delete', old.rowid, old.campaign_id, old.role, old.content);
     INSERT INTO messages_fts(rowid, campaign_id, role, content)

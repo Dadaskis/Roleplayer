@@ -88,7 +88,10 @@ impl ContentBlock {
 /// A chat message: a role plus an ordered list of content blocks.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
+    /// Who produced the message: system, user, assistant, or a tool reply.
     pub role: Role,
+    /// Ordered content blocks; a message carries several when tool calls
+    /// participate in the agentic turn (§4.6 of PLAN.md).
     pub content: Vec<ContentBlock>,
 }
 
@@ -108,7 +111,9 @@ impl ChatMessage {
 /// it knows exactly what arguments a command accepts (§4.6 of PLAN.md).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSchema {
+    /// Tool name the model must emit to invoke the command.
     pub name: String,
+    /// Prompt guidance telling the model when this tool is appropriate.
     pub description: String,
     /// JSON Schema object (type, properties, required, ...).
     pub parameters: Value,
@@ -121,50 +126,74 @@ pub struct ToolSchema {
 /// contract that keeps the app working across wildly different providers.
 #[derive(Debug, Clone, Copy)]
 pub struct Capabilities {
+    /// Whether `stream` can deliver text fragments to the UI as they are made.
     pub streaming: bool,
+    /// Whether the provider can take tool schemas and return tool calls.
     pub tool_use: bool,
+    /// Whether the provider reliably honours requests for valid JSON.
     pub json_mode: bool,
+    /// Hard ceiling on output tokens the provider enforces; used to size
+    /// buffers and to decide whether a reply fits in one completion.
     pub max_output_tokens: usize,
 }
 
 /// Metadata about a model a provider can run, surfaced in the picker UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelInfo {
+    /// Model id used in configs and `CompletionRequest.model`.
     pub id: String,
+    /// Human-friendly label shown in the provider picker.
     pub name: String,
+    /// Total context window in tokens, when the provider reports it.
     pub context_window: Option<usize>,
+    /// Maximum output the model allows, when the provider reports it.
     pub max_output: Option<usize>,
+    /// Whether this model is usable with tool calling.
     pub supports_tools: bool,
 }
 
 /// Token usage for a completion, when the provider reports it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Usage {
+    /// Input tokens consumed, when the provider reports them.
     pub prompt_tokens: Option<u64>,
+    /// Generated tokens consumed, when the provider reports them.
     pub completion_tokens: Option<u64>,
 }
 
 /// Everything a provider needs to produce a completion.
 #[derive(Debug, Clone)]
 pub struct CompletionRequest {
+    /// Provider model id to run (a `ModelInfo.id` chosen by the user).
     pub model: String,
+    /// Full conversation so far, including any tool round-trips.
     pub messages: Vec<ChatMessage>,
+    /// Tool schemas to advertise; empty when the provider has no `tool_use`.
     pub tools: Vec<ToolSchema>,
+    /// Sampling temperature; `None` lets the provider use its own default.
     pub temperature: Option<f32>,
+    /// Output token budget; `None` lets the provider use its own default.
     pub max_tokens: Option<u32>,
+    /// Whether to stream; providers without `streaming` degrade to one-shot.
     pub stream: bool,
 }
 
 /// The completed turn: the assistant message plus usage metadata.
 #[derive(Debug, Clone)]
 pub struct CompletionResponse {
+    /// The assistant's finished message: text, tool calls, or both.
     pub message: ChatMessage,
+    /// Token usage, when the provider reports it.
     pub usage: Option<Usage>,
+    /// Why generation stopped ("stop", "tool_calls", "length", ...).
     pub finish_reason: Option<String>,
 }
 
 /// The model boundary. One implementation per provider family; implementations
 /// live *only* inside the `providers` module (§5.3 of AGENTS.md).
+// `async_trait` lowers the async fns to boxed-future methods so the trait
+// stays object-safe — required because providers are stored and dispatched
+// behind `Arc<dyn LLMProvider>`.
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
     /// Stable provider id used in configs and the registry (e.g. "opencode-go").
@@ -186,6 +215,9 @@ pub trait LLMProvider: Send + Sync {
     /// arrive (drives the streaming renderer); the full response is returned
     /// at the end. Must apply its own timeout and honour cancellation when the
     /// surrounding task is aborted (§5.17 of AGENTS.md).
+    ///
+    /// The callback is boxed (`Box<dyn Fn ...>`) instead of generic so this
+    /// stays object-safe, keeping `Arc<dyn LLMProvider>` dispatch possible.
     async fn stream(
         &self,
         request: CompletionRequest,

@@ -10,6 +10,8 @@ use crate::storage as repo;
 
 /// Orchestrates full-text search over transcripts.
 pub struct SearchService<S: Storage> {
+    // Shared seam to the single-writer DB connection; `Arc` lets the service
+    // be shared between the UI command handlers and any background tasks.
     storage: Arc<S>,
 }
 
@@ -26,7 +28,10 @@ impl<S: Storage> SearchService<S> {
         query: &str,
         limit: i64,
     ) -> Result<Vec<SearchResult>> {
+        // Cap results so a runaway query can't dump the whole transcript.
         let limit = limit.clamp(1, 200);
+        // Delegated to the repo, which runs the FTS5 match and binds both the
+        // campaign filter and the capped limit as parameters (§5.16).
         let results =
             repo::search(self.storage.as_ref(), campaign_id, query, limit)?;
         tracing::debug!(

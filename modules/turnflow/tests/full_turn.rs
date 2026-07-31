@@ -22,14 +22,20 @@ async fn full_turn_with_mock_provider_completes() {
     // In-memory storage keeps the test headless and isolated.
     let storage = Arc::new(Database::open_in_memory().expect("in-memory db"));
     let bus = EventBus::new();
+    // Subscribe before the turn starts so no event (including TurnComplete)
+    // can slip past between spawn and the wait loop.
     let mut events = bus.subscribe();
 
     // Seed the aggregate: campaign + builtin ruleset + a player character.
+    // These are the real services over the same in-memory storage, so the test
+    // exercises the actual composition the app would use.
     let campaigns = Arc::new(CampaignService::new(storage.clone()));
     let campaign = campaigns
         .create(NewCampaign {
             name: "Dungeon Test".to_string(),
             description: String::new(),
+            // No explicit ruleset: the turn flow must fall back to the
+            // built-in default, which is what a real user sees out of the box.
             ruleset_id: None,
         })
         .expect("create campaign");
@@ -40,6 +46,8 @@ async fn full_turn_with_mock_provider_completes() {
     let world = Arc::new(WorldStateService::new(storage.clone()));
 
     // Providers: mock only, forced as the default regardless of env.
+    // `ensure_defaults` prefers opencode-go when a real key exists, so the
+    // test overrides the default to mock explicitly to stay deterministic.
     let registry = Arc::new(ProviderRegistry::new());
     let providers =
         Arc::new(ProviderService::new(storage.clone(), registry.clone()));
@@ -63,8 +71,11 @@ async fn full_turn_with_mock_provider_completes() {
     let prepared = turnflow
         .prepare_turn(&campaign.id, "I swing my axe at the goblin — roll dice")
         .expect("prepare turn");
+    // Turn indices start at 1 for the first turn of a fresh campaign.
     assert_eq!(prepared.turn_index, 1, "first turn has index 1");
 
+    // Hand the prepared turn to a background task — the same split the app
+    // crate uses: prepare synchronously, run on the async runtime.
     let runner = turnflow.clone();
     let _handle = tokio::spawn(async move {
         runner.run_prepared(prepared).await;
@@ -79,13 +90,18 @@ async fn full_turn_with_mock_provider_completes() {
                 campaign_id,
                 turn_index: completed_index,
             })) => {
+                // Match the turn we actually started, not a stale one.
                 assert_eq!(campaign_id, campaign.id);
                 assert_eq!(completed_index, 1);
                 completed = true;
                 break;
             }
+            // Any other event (deltas, tool calls) is intermediate; skip it
+            // and keep waiting for the terminal completion.
             Ok(Ok(_other)) => continue,
+            // Channel closed without a completion: treat as failure.
             Ok(Err(_)) => break,
+            // Timeout: the loop never finished — treat as failure.
             Err(_elapsed) => break,
         }
     }
@@ -96,10 +112,14 @@ async fn full_turn_with_mock_provider_completes() {
     let messages =
         turnflow.list_messages(&campaign.id, 100).expect("list messages");
     assert!(messages.len() >= 4, "expected >=4 rows, got {}", messages.len());
+    // User + Assistant + Tool all present proves the full tool path persisted:
+    // input, GM narrative, and the dice roll result each made it to storage.
     assert!(messages.iter().any(|message| message.role == Role::User));
     assert!(messages.iter().any(|message| message.role == Role::Assistant));
     assert!(messages.iter().any(|message| message.role == Role::Tool));
 
+    // Dice is a read-only command, so the world must stay empty — proving the
+    // mutation journal is only applied for commands that declare mutations.
     // The world document was never touched by the dice path.
     let document = world.get_document(&campaign.id).expect("world doc");
     assert!(document

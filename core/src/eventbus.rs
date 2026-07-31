@@ -39,6 +39,9 @@ pub struct EventBus {
 impl EventBus {
     /// Create a new bus with the standard buffer.
     pub fn new() -> EventBus {
+        // The seed receiver is deliberately discarded: every real subscriber
+        // creates its own via `subscribe()`, and a broadcast channel needs a
+        // receiver to exist at creation time before `send` can succeed.
         let (sender, _receiver) = broadcast::channel(EVENT_BUFFER);
         EventBus { sender }
     }

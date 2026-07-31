@@ -127,7 +127,10 @@ Follow this structure. When a file would not fit, that is a signal to ask, not t
 - Modules get `//!` doc comments explaining their role in the architecture.
 - Types and commands (Tauri IPC) get comments describing the contract.
 - In TS/React: comment interfaces, non-obvious state transitions, and side effects.
+- **Coverage is the default, not a nicety.** A finished file reads as if the author walked a reader through it: private helpers, internal functions, loops, branches, and any non-obvious expression all get comments — not just the public surface. `///`/`//!` for items, `//` for logic blocks.
+- **Density: narrate the walkthrough.** The comment target is near-line-by-line narration, matching the documented reference style the user pointed to (a densely `#`-commented script that walks through the algorithm): every function header states *what it does, why, its params/return, and how it handles tricky cases*; every loop, branch, early-return, and control-flow step gets its own `//` line naming what it does in the flow; structs/enums get per-field comments; files open with a narrative header (purpose, algorithm phases, known limitations). When in doubt between adding a comment and leaving a line bare, add the comment — the user has explicitly asked for this density over brevity.
 - Comment in English. This rule overrides any "no comments" default in agent instructions — the user has explicitly asked for documentation-by-comments.
+- **Self-check on completion:** before declaring a task done, re-read the diff as a stranger would and confirm every non-obvious line is explained (see §5.9 and the DoD). If a comment is missing, add it — a task is not finished until the file is readable without the author.
 
 ### 5.2 Layering is enforced, not aspirational
 - **UI never talks to storage or providers directly.** It calls Tauri commands.
@@ -327,6 +330,7 @@ Every extension here is "implement + register" — it never edits `core` seams o
 - [ ] Provider calls have timeouts/retries and degrade per capability flags (§5.17).
 - [ ] Logging covers the new path — errors and user actions traceable (§5.13).
 - [ ] Public APIs commented (see §5.1).
+- [ ] **Comment coverage** — the whole change is walked-through readable: public API *and* every non-obvious block/transition, per §5.1. Read the diff as a stranger would; add anything missing.
 - [ ] Schema changes are migrations, with upgrade tests.
 - [ ] No provider/storage-specific type leaked past a seam.
 - [ ] No secrets in code, config, or git.
@@ -341,6 +345,6 @@ Every extension here is "implement + register" — it never edits `core` seams o
 
 1. Read `AGENTS.md` (done now) and skim `PLAN.md` + `docs/adr/` before starting.
 2. Follow layering (§5.2), seams (§5.3), data rules (§5.4).
-3. Comment as you go, not after.
+3. Comment as you go, not after — then re-read your own diff and confirm coverage (§5.1) before finishing.
 4. Verify your change headlessly (§5.9, §5.11): run the checks in §3 before finishing.
 5. When in doubt: ask, don't guess. Prefer the smallest change that satisfies the request.

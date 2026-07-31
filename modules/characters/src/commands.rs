@@ -9,14 +9,18 @@ use tauri::State;
 use crate::domain::{Character, NewCharacter, UpdateCharacter};
 use crate::service::CharacterService;
 
+// Long-lived shared instance, injected via Tauri State; Arc for concurrency.
+// `Database` is the concrete backend the app wires at startup.
 type SharedCharacterService = Arc<CharacterService<Database>>;
 
 /// Command: list all characters of a campaign.
 #[tauri::command]
 pub fn list_characters(
+    // Tauri injects the shared service from managed state for this call.
     service: State<'_, SharedCharacterService>,
     campaign_id: String,
 ) -> Result<Vec<Character>, ErrorDto> {
+    // Delegation only; the campaign scoping lives in the repo's SQL.
     service.list_for_campaign(&campaign_id).map_err(ErrorDto::from)
 }
 
@@ -24,6 +28,7 @@ pub fn list_characters(
 #[tauri::command]
 pub fn create_character(
     service: State<'_, SharedCharacterService>,
+    // Input validated inside the service (NewCharacter::validate), not here.
     input: NewCharacter,
 ) -> Result<Character, ErrorDto> {
     service.create(input).map_err(ErrorDto::from)
@@ -35,6 +40,7 @@ pub fn get_character(
     service: State<'_, SharedCharacterService>,
     character_id: String,
 ) -> Result<Option<Character>, ErrorDto> {
+    // None (unknown id) becomes JSON null on the wire, not an error.
     service.get(&character_id).map_err(ErrorDto::from)
 }
 
@@ -42,6 +48,7 @@ pub fn get_character(
 #[tauri::command]
 pub fn update_character(
     service: State<'_, SharedCharacterService>,
+    // The id is a lookup key only; the authoritative row comes from the DB.
     character_id: String,
     input: UpdateCharacter,
 ) -> Result<Option<Character>, ErrorDto> {
@@ -54,5 +61,6 @@ pub fn delete_character(
     service: State<'_, SharedCharacterService>,
     character_id: String,
 ) -> Result<bool, ErrorDto> {
+    // The boolean tells the UI whether the character existed at all.
     service.delete(&character_id).map_err(ErrorDto::from)
 }

@@ -12,6 +12,8 @@ use crate::storage as repo;
 
 /// Orchestrates the world-state document. The only applier of mutations.
 pub struct WorldStateService<S: Storage> {
+    // Shared seam to the single-writer DB connection; `Arc` allows the service
+    // to be shared between the turn flow and the UI command handlers.
     storage: Arc<S>,
 }
 
@@ -23,6 +25,8 @@ impl<S: Storage> WorldStateService<S> {
 
     /// The current world document for a campaign (`{}` when empty).
     pub fn get_document(&self, campaign_id: &str) -> Result<Value> {
+        // Reads the whole JSON document in one shot; per-key reads happen
+        // inside the repo when the turn flow builds its context snapshot.
         repo::get_document(self.storage.as_ref(), campaign_id)
     }
 
@@ -38,10 +42,15 @@ impl<S: Storage> WorldStateService<S> {
         args: &Value,
         message_id: Option<&str>,
     ) -> Result<Vec<StateChange>> {
+        // Mutations apply in declaration order; each gets its own audit row so
+        // the trail shows exactly what changed, before and after.
         let mut changes = Vec::new();
         for mutation in mutations {
+            // Match on the mutation kind to drive the correct repo write.
             let change = match mutation {
                 StateMutation::SetWorldKey { key, value } => {
+                    // Each set produces a (before, after) pair from the repo,
+                    // captured right around the write for an accurate diff.
                     let (before, after) = repo::set_key(
                         self.storage.as_ref(),
                         campaign_id,
@@ -52,17 +61,21 @@ impl<S: Storage> WorldStateService<S> {
                         message_id,
                     )?;
                     StateChange {
+                        // Fresh audit id per row, never reused.
                         id: roleplayer_core::new_id(),
                         campaign_id: campaign_id.to_string(),
                         tool: tool.to_string(),
                         args: args.clone(),
                         before_value: before,
                         after_value: after,
+                        // Tie the audit row to the transcript row when the
+                        // change came from a tool call; None for manual edits.
                         message_id: message_id.map(|value| value.to_string()),
                         created_at: roleplayer_core::now_rfc3339(),
                     }
                 }
             };
+            // Collect every audit entry so the caller gets the full batch.
             changes.push(change);
         }
         tracing::info!(
@@ -81,6 +94,8 @@ impl<S: Storage> WorldStateService<S> {
         key: &str,
         value: Value,
     ) -> Result<(Value, Value)> {
+        // Audit as tool "manual" with the key as args, so manual edits produce
+        // the same before/after rows a GM tool call would.
         repo::set_key(
             self.storage.as_ref(),
             campaign_id,
@@ -88,6 +103,8 @@ impl<S: Storage> WorldStateService<S> {
             &value,
             "manual",
             &serde_json::json!({ "key": key }),
+            // No transcript row to link: this edit came from the settings UI,
+            // not from an assistant tool call.
             None,
         )
     }
@@ -98,6 +115,7 @@ impl<S: Storage> WorldStateService<S> {
         campaign_id: &str,
         key: &str,
     ) -> Result<(Value, Value)> {
+        // Same uniform audit trail as set_key_manual, for removals.
         repo::remove_key(
             self.storage.as_ref(),
             campaign_id,
@@ -114,6 +132,8 @@ impl<S: Storage> WorldStateService<S> {
         campaign_id: &str,
         limit: i64,
     ) -> Result<Vec<StateChange>> {
+        // Delegated; the repo enforces the limit in SQL, so a huge limit
+        // cannot dump unbounded rows into memory.
         repo::list_changes(self.storage.as_ref(), campaign_id, limit)
     }
 }
