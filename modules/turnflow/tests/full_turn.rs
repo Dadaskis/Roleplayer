@@ -58,15 +58,17 @@ async fn full_turn_with_mock_provider_completes() {
         bus.clone(),
     ));
 
-    // Send a turn that triggers the Mock's dice tool call.
-    let turn_index = turnflow
-        .clone()
-        .send_turn(
-            campaign.id.clone(),
-            "I swing my axe at the goblin — roll dice".to_string(),
-        )
-        .expect("send turn");
-    assert_eq!(turn_index, 1, "first turn has index 1");
+    // Send a turn that triggers the Mock's dice tool call. Preparation is
+    // synchronous; execution is spawned here (tests run inside a tokio runtime).
+    let prepared = turnflow
+        .prepare_turn(&campaign.id, "I swing my axe at the goblin — roll dice")
+        .expect("prepare turn");
+    assert_eq!(prepared.turn_index, 1, "first turn has index 1");
+
+    let runner = turnflow.clone();
+    let _handle = tokio::spawn(async move {
+        runner.run_prepared(prepared).await;
+    });
 
     // Wait for the TurnComplete event (10s guard against a hung loop).
     let mut completed = false;

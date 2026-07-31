@@ -14,4 +14,4 @@ pub mod storage;
 pub mod commands;
 
 pub use domain::{DiceCommand, UpdateWorldCommand};
-pub use service::{MessageDto, TurnService};
+pub use service::{MessageDto, PreparedTurn, TurnService};

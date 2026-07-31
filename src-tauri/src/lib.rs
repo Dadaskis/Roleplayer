@@ -113,6 +113,7 @@ fn init_logging(data_dir: &std::path::Path) {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));
     let logs_dir = data_dir.join("logs");
+    install_panic_hook(&logs_dir);
     rotate_logs(&logs_dir);
 
     let log_path = logs_dir.join("roleplayer.log");
@@ -141,6 +142,49 @@ fn init_logging(data_dir: &std::path::Path) {
 
 /// Max size of the current log before it is rotated at next startup.
 const LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Install a panic hook that records every panic to `logs/panic.log`.
+///
+/// Without this, a Rust panic only reaches stderr — invisible in a packaged
+/// Windows GUI app, and a non-unwinding panic aborts with no crash dump (that
+/// is exactly how the app died earlier: `tokio::spawn` without a runtime, from
+/// a WebView2 COM callback). The hook runs for **both** unwinding and aborting
+/// panics, so nothing slips past the file, which agents can read directly.
+fn install_panic_hook(logs_dir: &std::path::Path) {
+    use std::io::Write;
+
+    let panic_log_path = logs_dir.join("panic.log");
+    tracing::info!("panic hook will log to {}", panic_log_path.display());
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let message = panic_info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|payload| (*payload).to_string())
+            .or_else(|| panic_info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic with non-string payload".to_string());
+        let location = panic_info
+            .location()
+            .map(|location| location.to_string())
+            .unwrap_or_else(|| "unknown location".to_string());
+        // Force capture: the backtrace is recorded even without RUST_BACKTRACE.
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let timestamp = roleplayer_core::now_rfc3339();
+
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&panic_log_path)
+        {
+            let _ = writeln!(
+                file,
+                "=== PANIC {timestamp} ===\nlocation: {location}\nmessage: {message}\n{backtrace}\n"
+            );
+        }
+        // Keep the default hook so stderr still shows the panic in dev.
+        default_hook(panic_info);
+    }));
+}
 
 /// Shift the log chain: `.log` -> `.1` -> `.2` -> `.3`, dropping `.3`, but only
 /// when the current file has outgrown [`LOG_MAX_BYTES`].

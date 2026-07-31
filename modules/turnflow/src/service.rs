@@ -79,10 +79,25 @@ impl MessageDto {
     }
 }
 
+/// A turn that is prepared but not yet executed.
+///
+/// Spawning is deliberately the *caller's* job: running a turn in the
+/// background requires a Tokio runtime, which only exists inside the app
+/// (tauri's runtime). The service itself stays tauri-free, so it exposes
+/// preparation and execution as two steps.
+pub struct PreparedTurn {
+    pub campaign_id: String,
+    pub turn_index: i64,
+    user_message: MessageDto,
+}
+
 /// Orchestrates the agentic GM loop (§4.6 of PLAN.md).
 ///
-/// One instance per app, shared behind `Arc`. A turn is spawned as a background
-/// tokio task so the UI stays responsive while events stream (§5.12).
+/// One instance per app, shared behind `Arc`. Execution is two-phase:
+/// [`TurnService::prepare_turn`] validates and persists the user message
+/// (cheap, synchronous), then the caller hands the [`PreparedTurn`] to
+/// [`TurnService::run_prepared`] on the app's runtime so the UI stays
+/// responsive while events stream (§5.12).
 pub struct TurnService<S: Storage> {
     storage: Arc<S>,
     world: Arc<WorldStateService<S>>,
@@ -121,16 +136,21 @@ impl<S: Storage + 'static> TurnService<S> {
         }
     }
 
-    /// Spawn a full agentic turn for the player's action and return immediately.
+    /// Prepare a turn: validate, persist the user message, return the turn.
     ///
-    /// The caller holds the `Arc`; the loop runs off the command thread and
-    /// reports progress via [`AppEvent`]s on the bus.
-    pub fn send_turn(
-        self: Arc<Self>,
-        campaign_id: String,
-        text: String,
-    ) -> Result<i64> {
-        let campaign = self.campaigns.get(&campaign_id)?.ok_or_else(|| {
+    /// Cheap and synchronous, safe to call from any thread (including a Tauri
+    /// sync command thread with no Tokio runtime context). Execution is handed
+    /// to [`TurnService::run_prepared`] by the caller on a real runtime.
+    ///
+    /// Deliberately does NOT spawn: `tokio::spawn` panics ("no reactor running")
+    /// when called from a Tauri sync command thread, which has no runtime
+    /// context. Spawning is the composition layer's job.
+    pub fn prepare_turn(
+        &self,
+        campaign_id: &str,
+        text: &str,
+    ) -> Result<PreparedTurn> {
+        let campaign = self.campaigns.get(campaign_id)?.ok_or_else(|| {
             AppError::Domain(format!("campaign not found: {campaign_id}"))
         })?;
         // Validate ruleset exists up front so a broken campaign fails fast
@@ -138,22 +158,32 @@ impl<S: Storage + 'static> TurnService<S> {
         self.resolve_ruleset(campaign.ruleset_id.as_deref())?;
 
         let turn_index =
-            repo::latest_turn_index(self.storage.as_ref(), &campaign_id)? + 1;
+            repo::latest_turn_index(self.storage.as_ref(), campaign_id)? + 1;
         let user_message =
-            MessageDto::text(&campaign_id, Role::User, text.trim(), turn_index);
+            MessageDto::text(campaign_id, Role::User, text.trim(), turn_index);
         repo::insert_message(self.storage.as_ref(), &user_message)?;
 
-        // Clear any stale cancel flag, then run the loop in the background.
+        // Clear any stale cancel flag from a previous turn.
         if let Ok(mut cancelled) = self.cancelled.lock() {
-            cancelled.remove(&campaign_id);
+            cancelled.remove(campaign_id);
         }
-        let runner = Arc::clone(&self);
-        let spawn_campaign_id = campaign_id.clone();
-        tokio::spawn(async move {
-            runner.run_loop(spawn_campaign_id, user_message, turn_index).await;
-        });
-        tracing::info!(campaign_id = %campaign_id, turn_index, "turn started");
-        Ok(turn_index)
+        tracing::info!(campaign_id = %campaign_id, turn_index, "turn prepared");
+        Ok(PreparedTurn {
+            campaign_id: campaign_id.to_string(),
+            turn_index,
+            user_message,
+        })
+    }
+
+    /// Execute a prepared turn on the caller's runtime (§5.12: off the UI
+    /// thread). Events stream on the bus; this resolves when the turn ends.
+    pub async fn run_prepared(self: Arc<Self>, prepared: PreparedTurn) {
+        self.run_loop(
+            prepared.campaign_id,
+            prepared.user_message,
+            prepared.turn_index,
+        )
+        .await;
     }
 
     /// Request cancellation of the running turn for a campaign.

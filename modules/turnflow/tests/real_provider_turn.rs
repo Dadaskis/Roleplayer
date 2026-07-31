@@ -73,13 +73,16 @@ async fn real_opencode_go_turn_completes() {
         bus.clone(),
     ));
 
-    turnflow
-        .clone()
-        .send_turn(
-            campaign.id.clone(),
-            "A tavern door creaks open. I step inside and look around — describe the scene and set a fact about the room with your tools if it fits.".to_string(),
+    let prepared = turnflow
+        .prepare_turn(
+            &campaign.id,
+            "A tavern door creaks open. I step inside and look around — describe the scene and set a fact about the room with your tools if it fits.",
         )
-        .expect("send turn");
+        .expect("prepare turn");
+    let runner = turnflow.clone();
+    let _handle = tokio::spawn(async move {
+        runner.run_prepared(prepared).await;
+    });
 
     // The real model may take a while; be generous.
     let mut completed = false;

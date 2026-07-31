@@ -18,8 +18,20 @@ pub fn send_turn(
     campaign_id: String,
     text: String,
 ) -> Result<i64, ErrorDto> {
-    // Clone the inner Arc so the background loop can outlive the command.
-    service.inner().clone().send_turn(campaign_id, text).map_err(ErrorDto::from)
+    let service = service.inner().clone();
+    let prepared =
+        service.prepare_turn(&campaign_id, &text).map_err(ErrorDto::from)?;
+    let turn_index = prepared.turn_index;
+
+    // Run the loop on tauri's own async runtime. `tauri::async_runtime::spawn`
+    // lazily ensures a runtime exists, so this is safe from a sync command
+    // thread — a bare `tokio::spawn` here would panic ("no reactor running")
+    // because sync commands run with no Tokio context.
+    tauri::async_runtime::spawn(async move {
+        service.run_prepared(prepared).await;
+    });
+
+    Ok(turn_index)
 }
 
 /// Command: cancel the running turn for a campaign.
