@@ -243,6 +243,9 @@ Provider-specific types must never leak outside a provider adapter. If you catch
 - Prefer **additive** changes: new optional fields, new commands, new content-block types. Renaming or removing a command is a breaking change — treat it like a schema change: deliberate, reviewed, logged.
 - Every IPC command is thin (§5.2): validate, call a service, return a DTO. If a command needs orchestration, it belongs in a service, not in the command.
 
+### 5.19 README currency
+- The README is the front door of the repo — keep it true. Any change that affects what a newcomer sees (commands, layout, features, status, stack) requires a matching README update **in the same commit**. If a task turns out to have made the README stale, fix it before reporting done — never leave it for later. A README that contradicts the code is a bug.
+
 ## 6. Code conventions
 
 **Applies to all code (Rust and TypeScript) — markdown docs are exempt.** Keep lines under 80 symbols (chars). This is a **general review idea, not a hard gate**: format configs target 80 (`rustfmt` `max_width = 80`, Prettier `printWidth = 80`), and reviewers flag frequent or egregious violations rather than a one-off 81-char line. If a line must exceed 80 (long URL, unavoidable literal), split it or comment the reason — do not silently exceed the limit.
@@ -334,6 +337,7 @@ Every extension here is "implement + register" — it never edits `core` seams o
 - [ ] Schema changes are migrations, with upgrade tests.
 - [ ] No provider/storage-specific type leaked past a seam.
 - [ ] No secrets in code, config, or git.
+- [ ] README is current — any user-facing change (commands, layout, features, status, stack) is reflected in it (§5.19).
 - [ ] Change committed to git with a detailed body explaining the *why* (see §6 Git).
 - [ ] PR describes the *why* and references the relevant ADR if behavior changed.
 
