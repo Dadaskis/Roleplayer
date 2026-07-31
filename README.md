@@ -114,3 +114,8 @@ Tauri app crate, so every check above runs headless.
   app design, agentic GM, and the UI).
 - [docs/adr](docs/adr/) — decision records; every meaningful design decision
   gets an entry.
+
+---
+
+## License
+MIT License. Happiness to everyone!
