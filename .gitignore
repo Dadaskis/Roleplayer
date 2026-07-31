@@ -1,0 +1,71 @@
+# --- Dependencies ---
+node_modules/
+
+# --- Build outputs ---
+dist/
+dist-ssr/
+out/
+*.local
+
+# Rust / Cargo
+target/
+**/target/
+*.profraw
+*.pdb
+
+# Tauri (app output, bundles, icons cache)
+src-tauri/target/
+src-tauri/gen/
+*.app
+*.appimage
+*.deb
+*.msi
+*.msix
+*.rpm
+*.dmg
+*.nsis
+*.exe
+!src-tauri/icons/icon.ico
+!src-tauri/icons/icon.icns
+
+# --- Runtime data ---
+# Local SQLite databases and WAL/SHM files (schema lives in migrations; data is user data)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Logs (app writes here per AGENTS.md §5.13)
+logs/
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# --- Misc ---
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.eslintcache
+.vite/
