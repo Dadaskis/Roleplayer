@@ -122,32 +122,33 @@ export function CampaignsScreen({
   return (
     <div className="home">
       <div className="home-inner">
-        {/* Header: brand title + guidance left, the Settings gear right — the
-            only two things the lobby's header needs. */}
+        {/* Header: the brand title left, the Settings gear right — the only
+            two things the lobby's header needs. */}
         <div className="home-header">
-          <div>
-            <h1 className="home-title">Roleplayer</h1>
-            <p className="home-subtitle">A story where the GM is an AI and you are the character.</p>
-          </div>
+          <h1 className="home-title">Roleplayer</h1>
           <button className="icon-btn" onClick={onOpenSettings} aria-label="Settings" title="Settings">
             ⚙
           </button>
         </div>
 
-        {/* Create is a secondary action behind a toggle: a quiet "+ New
-            roleplay" link that expands into the form only when asked. */}
-        <button
-          className="btn btn-ghost"
-          style={{ alignSelf: "flex-start" }}
-          onClick={() => {
-            // Toggle the form; a fresh open clears any stale error so the
-            // failure from a previous attempt doesn't linger behind it.
-            setShowCreate((visible) => !visible)
-            setError(null)
-          }}
-        >
-          {showCreate ? "Cancel" : "+ New roleplay"}
-        </button>
+        {/* The campaign list: the lobby's main content, newest activity first.
+            The "+ New roleplay" toggle sits on the right of the section label,
+            so creating stays a secondary action beside the list it feeds. */}
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          {/* .home-section already carries margin: 0; no inline override. */}
+          <p className="home-section">Your roleplays ({sorted.length})</p>
+          <button
+            className="btn btn-ghost"
+            onClick={() => {
+              // Toggle the form; a fresh open clears any stale error so the
+              // failure from a previous attempt doesn't linger behind it.
+              setShowCreate((visible) => !visible)
+              setError(null)
+            }}
+          >
+            {showCreate ? "Cancel" : "+ New roleplay"}
+          </button>
+        </div>
 
         {/* The create form, only rendered while toggled open. */}
         {showCreate ? (
@@ -178,9 +179,6 @@ export function CampaignsScreen({
             </div>
           </Card>
         ) : null}
-
-        {/* The campaign list: the lobby's main content, newest activity first. */}
-        <p className="home-section">Your roleplays ({sorted.length})</p>
 
         {/* Empty state guides the user; no campaigns yet is the common first
             run, so it gets prose rather than a bare empty list. */}
