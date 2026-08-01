@@ -12,16 +12,17 @@
 
 // Local state is the only React state the shell needs — module stores hold the
 // rest (campaign selection) and TanStack Query owns server data.
-import { useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useEffect, useState } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 
 // The typed IPC bridge for the shell-level debug-window command.
-import { openDebugWindow } from "./core/api/invoke"
+import { onTurnEvent, openDebugWindow } from "./core/api/invoke"
+import { Button } from "./core/ui/components"
 
 // Each import is the module's public surface (index.ts); internals stay out of
 // reach so App composes modules without touching their private files.
 import { CampaignsScreen, getCampaign, useCampaignStore } from "./modules/campaigns"
-import { ChatScreen } from "./modules/chat"
+import { ChatScreen, startRoleplay } from "./modules/chat"
 import { ProvidersScreen } from "./modules/providers"
 import { RulesetsScreen } from "./modules/rulesets"
 
@@ -91,10 +92,54 @@ function ChatStage({
   // The campaign name comes from a dedicated query (not the lobby cache) so
   // the top bar reads correctly even if this chat was entered before a list
   // fetch; the lobby's list and this lookup share the same backend row.
+  const queryClient = useQueryClient()
   const { data: campaign } = useQuery({
     queryKey: ["campaign", campaignId],
     queryFn: () => getCampaign(campaignId),
   })
+
+  // Keep the campaign's status fresh: after the worldgen turn completes (or
+  // fails), the status flips worldgen → active/setup. Refetch the campaign on
+  // turn_complete/turn_error so the Start-roleplay button reflects reality.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    let active = true
+    onTurnEvent((event) => {
+      if (event.campaign_id !== campaignId) {
+        return
+      }
+      if (event.type === "turn_complete" || event.type === "turn_error") {
+        queryClient.invalidateQueries({ queryKey: ["campaign", campaignId] })
+      }
+    }).then((release) => {
+      if (active) {
+        unlisten = release
+      } else {
+        release()
+      }
+    })
+    return () => {
+      active = false
+      unlisten?.()
+    }
+  }, [campaignId, queryClient])
+
+  // The lifecycle status drives the Start-roleplay affordance: setup offers
+  // the button, worldgen shows a locked "generating" state, active hides both.
+  const status = campaign?.status
+  // Local pending flag: while a start request is in flight the button locks,
+  // so a double-click can't fire two start_roleplay calls (the backend would
+  // reject the second anyway; this keeps the UI honest in the meantime).
+  const [starting, setStarting] = useState(false)
+
+  function handleStartRoleplay() {
+    setStarting(true)
+    startRoleplay(campaignId).catch(() => {
+      // A rejected start (e.g. the campaign left setup between render and
+      // click) must unlock the button rather than leave it frozen.
+      setStarting(false)
+    })
+  }
 
   return (
     <div className="stage">
@@ -110,6 +155,19 @@ function ChatStage({
           <span className="topbar-title">{campaign?.name ?? ""}</span>
         </div>
         <div className="row">
+          {/* Start-roleplay affordance: the player ends the setup Q&A and the
+              GM generates the world + characters, then opens the story. */}
+          {status === "setup" ? (
+            <Button variant="primary" onClick={handleStartRoleplay} disabled={starting}>
+              {starting ? "Generating…" : "Start roleplay"}
+            </Button>
+          ) : status === "worldgen" ? (
+            // The generation turn is single-flight; the button reads as a
+            // locked state until the campaign settles active or back to setup.
+            <Button variant="ghost" disabled>
+              Generating world…
+            </Button>
+          ) : null}
           {/* Debug opens the pop-out window with the world/memory/audit data.
               Labeled plainly "Debug" because that is exactly what it reveals —
               raw data under the hood, not a feature. */}
@@ -128,8 +186,9 @@ function ChatStage({
         </div>
       </header>
 
-      {/* The chat fills everything under the bar. */}
-      <ChatScreen campaignId={campaignId} />
+      {/* The chat fills everything under the bar; the campaign phase lets it
+          auto-kick the setup intro when a fresh setup campaign opens. */}
+      <ChatScreen campaignId={campaignId} status={status} />
     </div>
   )
 }

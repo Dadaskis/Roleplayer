@@ -47,6 +47,14 @@ async fn real_opencode_go_turn_completes() {
             ruleset_id: None,
         })
         .expect("create campaign");
+    // New campaigns start in setup; this smoke test exercises the play loop,
+    // so activate it the way start_roleplay would.
+    campaigns
+        .set_status(
+            &campaign.id,
+            roleplayer_campaigns::domain::CampaignStatus::Active,
+        )
+        .expect("activate campaign");
 
     let rulesets = Arc::new(RulesetService::new(storage.clone()));
     rulesets.ensure_default().expect("seed ruleset");

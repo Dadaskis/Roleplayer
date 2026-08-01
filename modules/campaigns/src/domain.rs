@@ -9,6 +9,43 @@ use serde::{Deserialize, Serialize};
 /// Maximum length of a campaign name; names are kept short for sidebars/UI.
 pub const MAX_NAME_LENGTH: usize = 120;
 
+/// The lifecycle state of a campaign (a closed state machine, §5.4).
+///
+/// The GM asks clarifying questions while `Setup`, generates the world and
+/// characters during the transient `Worldgen` turn, then narrates normally
+/// once `Active`. The status is backend-driven only — never client-editable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CampaignStatus {
+    /// The GM is asking questions before the world exists.
+    Setup,
+    /// A world-generation turn is in flight (single-flight guard).
+    Worldgen,
+    /// Normal play: the world exists and the story runs.
+    Active,
+}
+
+impl CampaignStatus {
+    /// Stable wire name used in persistence and IPC.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CampaignStatus::Setup => "setup",
+            CampaignStatus::Worldgen => "worldgen",
+            CampaignStatus::Active => "active",
+        }
+    }
+
+    /// Inverse of [`CampaignStatus::as_str`]; unknown strings fall back to
+    /// `Setup` so pre-v3 rows and malformed values degrade gracefully.
+    pub fn from_wire(value: &str) -> CampaignStatus {
+        match value {
+            "worldgen" => CampaignStatus::Worldgen,
+            "active" => CampaignStatus::Active,
+            _ => CampaignStatus::Setup,
+        }
+    }
+}
+
 /// A roleplay session. Owns everything below it in the aggregate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Campaign {
@@ -20,6 +57,8 @@ pub struct Campaign {
     pub description: String,
     /// Optional GM "brain" preset; None falls back to default behaviour.
     pub ruleset_id: Option<String>,
+    /// Which lifecycle phase the campaign is in (drives the GM prompt).
+    pub status: CampaignStatus,
     /// Free-form JSON settings (per-campaign model hint, flags, ...).
     pub settings: serde_json::Value,
     /// RFC 3339 timestamp, set once at insert; drives newest-first lists.

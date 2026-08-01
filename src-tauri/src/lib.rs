@@ -377,6 +377,8 @@ pub fn run() {
             roleplayer_turnflow::commands::send_turn,
             roleplayer_turnflow::commands::cancel_turn,
             roleplayer_turnflow::commands::list_messages,
+            roleplayer_turnflow::commands::start_setup_intro,
+            roleplayer_turnflow::commands::start_roleplay,
             roleplayer_providers::commands::list_providers,
             roleplayer_providers::commands::list_models,
             roleplayer_providers::commands::set_provider_config,

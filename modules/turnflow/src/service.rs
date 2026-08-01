@@ -3,11 +3,16 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
+use roleplayer_campaigns::domain::CampaignStatus;
 use roleplayer_campaigns::service::CampaignService;
+use roleplayer_characters::domain::NewCharacter;
+use roleplayer_characters::game_command::CreateCharacterCommand;
 use roleplayer_characters::service::CharacterService;
 use roleplayer_core::errors::{AppError, Result};
 use roleplayer_core::eventbus::{AppEvent, EventBus};
-use roleplayer_core::game_command::{CommandContext, GameCommand};
+use roleplayer_core::game_command::{
+    CommandContext, GameCommand, StateMutation,
+};
 use roleplayer_core::llm::{
     ChatMessage, CompletionRequest, ContentBlock, MessageMode, Role, ToolSchema,
 };
@@ -27,9 +32,27 @@ use crate::storage as repo;
 /// adaptive with memory; fixed now keeps every turn cheap).
 const HISTORY_WINDOW: i64 = 40;
 
-/// Maximum tool-loop iterations in one turn, so a misbehaving model can't loop
-/// forever and burn tokens (§5.10, §5.17).
+/// Maximum tool-loop iterations in a normal turn, so a misbehaving model can't
+/// loop forever and burn tokens (§5.10, §5.17).
 const MAX_TOOL_ITERATIONS: usize = 5;
+
+/// World generation gets its own, larger budget: the GM must build a world
+/// document and a cast of characters before narrating the opening, which a
+/// normal turn's cap cannot hold. The global constant is deliberately left
+/// untouched so ordinary turns keep their tight safety bound.
+const WORLDGEN_MAX_ITERATIONS: usize = 12;
+
+/// Which mode a turn runs in. Selects the system prompt and the tool set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TurnPhase {
+    /// Pre-world: the GM asks clarifying questions. No tools are exposed —
+    /// the world does not exist yet, so nothing may be written.
+    Setup,
+    /// The GM generates the world and characters, then opens the story.
+    Worldgen,
+    /// Normal play: the agentic GM loop over a live world.
+    Active,
+}
 
 /// A transcript row, in the provider-agnostic shape the UI and IPC use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +166,9 @@ pub struct TurnService<S: Storage> {
     commands: Vec<Arc<dyn GameCommand>>,
     /// Campaign ids with a pending cancel request.
     cancelled: Mutex<HashSet<String>>,
+    /// Campaign ids whose setup-intro turn is currently in flight (the
+    /// idempotency guard that stops a double-invoked intro from running twice).
+    intros_in_flight: Mutex<HashSet<String>>,
 }
 
 impl<S: Storage + 'static> TurnService<S> {
@@ -165,12 +191,19 @@ impl<S: Storage + 'static> TurnService<S> {
             rulesets,
             providers,
             bus,
-            // v1 tool set: a read-only dice roll and the world update. Adding
-            // a command is "implement GameCommand + register here" (§8 of
-            // AGENTS.md); no core seam needs editing.
-            commands: vec![Arc::new(DiceCommand), Arc::new(UpdateWorldCommand)],
+            // The tool set the GM may call: a read-only dice roll, the world
+            // update, and character creation (worldgen builds the roster).
+            // Adding a command is "implement GameCommand + register here"
+            // (§8 of AGENTS.md); no core seam needs editing.
+            commands: vec![
+                Arc::new(DiceCommand),
+                Arc::new(UpdateWorldCommand),
+                Arc::new(CreateCharacterCommand),
+            ],
             // Start with no pending cancellations; the set is empty per turn.
             cancelled: Mutex::new(HashSet::new()),
+            // Start with no setup intros in flight.
+            intros_in_flight: Mutex::new(HashSet::new()),
         }
     }
 
@@ -194,6 +227,23 @@ impl<S: Storage + 'static> TurnService<S> {
         let campaign = self.campaigns.get(campaign_id)?.ok_or_else(|| {
             AppError::Domain(format!("campaign not found: {campaign_id}"))
         })?;
+        // A world is being generated right now; the player must not interleave
+        // a message into that single-flight turn.
+        if campaign.status == CampaignStatus::Worldgen {
+            return Err(AppError::Domain(
+                "the GM is generating the world; wait for it to finish"
+                    .to_string(),
+            ));
+        }
+        // The setup intro is a GM-initiated turn on this same campaign; the
+        // player must not interleave a message into it either (it would race
+        // for the same turn index). The intro is short — wait for its question.
+        if self.intros_in_flight_set().contains(campaign_id) {
+            return Err(AppError::Domain(
+                "the GM is opening the session; wait for its question"
+                    .to_string(),
+            ));
+        }
         // Validate ruleset exists up front so a broken campaign fails fast
         // instead of mid-loop.
         self.resolve_ruleset(campaign.ruleset_id.as_deref())?;
@@ -234,12 +284,187 @@ impl<S: Storage + 'static> TurnService<S> {
     pub async fn run_prepared(self: Arc<Self>, prepared: PreparedTurn) {
         // Consumes self via Arc so the loop can hold the service without the
         // caller keeping a reference alive across the await points.
+        // The phase follows the campaign's lifecycle status: a campaign still
+        // in setup answers in the Q&A mode, anything else plays normally.
+        let phase = self.phase_for_campaign(&prepared.campaign_id);
         self.run_loop(
-            prepared.campaign_id,
-            prepared.user_message,
+            &prepared.campaign_id,
+            Some(&prepared.user_message),
             prepared.turn_index,
+            phase,
+            MAX_TOOL_ITERATIONS,
         )
         .await;
+    }
+
+    /// Resolve the turn phase from a campaign's current lifecycle status.
+    fn phase_for_campaign(&self, campaign_id: &str) -> TurnPhase {
+        // A missing campaign degrades to Active (the loop already surfaced the
+        // missing-id error during prepare, so this is just a safe default).
+        match self.campaigns.get(campaign_id) {
+            Ok(Some(campaign)) if campaign.status == CampaignStatus::Setup => {
+                TurnPhase::Setup
+            }
+            // A Worldgen campaign never reaches run_prepared — prepare_turn
+            // rejects sends while the world is generating — so any other
+            // status (including a stale read) plays with the Active prompt.
+            _ => TurnPhase::Active,
+        }
+    }
+
+    /// Start the setup-intro turn for a campaign, if one is due.
+    ///
+    /// "Due" means: the campaign is in `setup` AND has no transcript yet AND no
+    /// intro is already in flight. Returns whether a turn was actually started
+    /// (the caller then spawns [`TurnService::run_setup_intro`]).
+    ///
+    /// Idempotency: the in-flight marker is checked AND inserted under a single
+    /// lock acquisition, so two racing invocations (StrictMode double mount,
+    /// double-click) cannot both pass the guard — a TOCTOU gap would let two
+    /// intro turns run concurrently on the same campaign.
+    pub fn start_setup_intro(&self, campaign_id: &str) -> Result<bool> {
+        // Hold one guard across the whole check-and-mark so no second caller
+        // can slip between the contains() and insert().
+        let mut in_flight = self.intros_in_flight_set();
+        if in_flight.contains(campaign_id) {
+            tracing::info!(campaign_id = %campaign_id, "setup intro already running");
+            return Ok(false);
+        }
+        let campaign = self.campaigns.get(campaign_id)?.ok_or_else(|| {
+            AppError::Domain(format!("campaign not found: {campaign_id}"))
+        })?;
+        // Only an untouched setup campaign gets the intro; a campaign with
+        // messages (already played or intro done) is not due. These DB reads
+        // happen while holding the guard — short, synchronous, and exactly
+        // what serializes the decision.
+        if campaign.status != CampaignStatus::Setup
+            || repo::latest_turn_index(self.storage.as_ref(), campaign_id)? != 0
+        {
+            return Ok(false);
+        }
+        in_flight.insert(campaign_id.to_string());
+        tracing::info!(campaign_id = %campaign_id, "setup intro starting");
+        Ok(true)
+    }
+
+    /// Run the setup-intro turn (GM-initiated; no player message). Must be
+    /// spawned on a runtime; removes the in-flight guard when it ends.
+    pub async fn run_setup_intro(self: Arc<Self>, campaign_id: String) {
+        // Reserve the next turn index for the GM's rows, like prepare_turn
+        // does. A read failure means the transcript is unavailable — abort
+        // rather than write at index 0 (which would collide with the
+        // "no transcript yet" sentinel the intro guard relies on).
+        let turn_index = match repo::latest_turn_index(
+            self.storage.as_ref(),
+            &campaign_id,
+        ) {
+            Ok(index) => index + 1,
+            Err(error) => {
+                self.fail(&campaign_id, error);
+                self.intros_in_flight_set().remove(&campaign_id);
+                return;
+            }
+        };
+        self.run_loop(
+            &campaign_id,
+            None,
+            turn_index,
+            TurnPhase::Setup,
+            MAX_TOOL_ITERATIONS,
+        )
+        .await;
+        // Release the idempotency guard regardless of how the turn ended.
+        self.intros_in_flight_set().remove(&campaign_id);
+    }
+
+    /// Start the world-generation flow: validate the campaign is in `setup`,
+    /// flip it to the transient `worldgen` state, and report success. The
+    /// caller then spawns [`TurnService::run_worldgen`].
+    pub fn start_roleplay(&self, campaign_id: &str) -> Result<()> {
+        let campaign = self.campaigns.get(campaign_id)?.ok_or_else(|| {
+            AppError::Domain(format!("campaign not found: {campaign_id}"))
+        })?;
+        // Only a setup campaign may begin generation; worldgen/active no-op
+        // via the guard, so a double-click cannot start two generation turns.
+        if campaign.status != CampaignStatus::Setup {
+            return Err(AppError::Domain(
+                "campaign is not in the setup phase".to_string(),
+            ));
+        }
+        // Flip to worldgen BEFORE the turn runs; this is the idempotency
+        // mechanism — a second call now sees Worldgen and refuses.
+        self.campaigns.set_status(campaign_id, CampaignStatus::Worldgen)?;
+        tracing::info!(campaign_id = %campaign_id, "world generation starting");
+        Ok(())
+    }
+
+    /// Run the worldgen turn, then settle the campaign's status.
+    ///
+    /// On a clean end (the GM narrated the opening) the campaign becomes
+    /// `active`; on failure (tool-loop cap, provider error, cancel) it reverts
+    /// to `setup` so the player can retry — never a half-generated world.
+    pub async fn run_worldgen(self: Arc<Self>, campaign_id: String) {
+        // Reserve the next turn index; on a read failure, revert the campaign
+        // to setup and surface the error (never write at index 0, which would
+        // corrupt the "no transcript yet" sentinel).
+        let turn_index = match repo::latest_turn_index(
+            self.storage.as_ref(),
+            &campaign_id,
+        ) {
+            Ok(index) => index + 1,
+            Err(error) => {
+                let _ = self
+                    .campaigns
+                    .set_status(&campaign_id, CampaignStatus::Setup);
+                self.fail(&campaign_id, error);
+                return;
+            }
+        };
+        let finished = self
+            .run_loop(
+                &campaign_id,
+                None,
+                turn_index,
+                TurnPhase::Worldgen,
+                WORLDGEN_MAX_ITERATIONS,
+            )
+            .await;
+        // Settle the state machine based on how the generation turn ended.
+        let next = if finished {
+            CampaignStatus::Active
+        } else {
+            CampaignStatus::Setup
+        };
+        if let Err(error) = self.campaigns.set_status(&campaign_id, next) {
+            tracing::error!(
+                campaign_id = %campaign_id,
+                %error,
+                "failed to settle campaign status after worldgen"
+            );
+            return;
+        }
+        if finished {
+            tracing::info!(campaign_id = %campaign_id, "world generation complete");
+        } else {
+            // The campaign is back in setup; tell the UI it may retry.
+            self.fail(
+                &campaign_id,
+                AppError::Domain(
+                    "world generation did not complete; you can try again"
+                        .to_string(),
+                ),
+            );
+        }
+    }
+
+    /// Lock-unwrapped view of the in-flight set (a poisoned lock degrades to
+    /// an empty set, i.e. "nothing in flight" — safe, the guard just re-runs).
+    fn intros_in_flight_set(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        self.intros_in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Request cancellation of the running turn for a campaign.
@@ -263,50 +488,61 @@ impl<S: Storage + 'static> TurnService<S> {
 
     /// The agentic loop. Runs on a background task; never returns an error to a
     /// caller — failures are logged and surfaced as [`AppEvent::TurnError`].
+    ///
+    /// `user_message` is `None` for GM-initiated turns (setup intro, worldgen)
+    /// where the system prompt alone instructs the GM to speak. Returns whether
+    /// the turn ended cleanly (a narrative answer); callers use that to settle
+    /// lifecycle state (worldgen → active vs. revert).
     async fn run_loop(
         &self,
-        campaign_id: String,
-        user_message: MessageDto,
+        campaign_id: &str,
+        user_message: Option<&MessageDto>,
         turn_index: i64,
-    ) {
-        // Publish the user message so the UI shows it immediately.
-        self.publish_turn_message(&user_message);
+        phase: TurnPhase,
+        max_iterations: usize,
+    ) -> bool {
+        // Publish the player's message so the UI shows it immediately; GM-
+        // initiated turns have none and skip this step.
+        if let Some(message) = user_message {
+            self.publish_turn_message(message);
+        }
 
         // Build the initial provider conversation.
         let mut context =
-            match self.build_context(&campaign_id, &user_message).await {
+            match self.build_context(campaign_id, user_message, phase).await {
                 Ok(context) => context,
                 Err(error) => {
                     // Context assembly failed (e.g. broken campaign/ruleset):
                     // surface a turn error and stop; nothing to complete.
-                    self.fail(&campaign_id, error);
-                    return;
+                    self.fail(campaign_id, error);
+                    return false;
                 }
             };
 
         // `finished` records a clean end (narrative, no tool calls). If the
         // loop exits with it still false, it hit the cap or was cancelled.
         let mut finished = false;
-        // The loop is bounded by MAX_TOOL_ITERATIONS: a model stuck in a
-        // tool-call cycle can only burn a fixed number of round-trips.
-        for iteration in 1..=MAX_TOOL_ITERATIONS {
+        // The loop is bounded by `max_iterations`: a model stuck in a tool-call
+        // cycle can only burn a fixed number of round-trips. Normal turns get
+        // the tight default; worldgen gets its own larger budget.
+        for iteration in 1..=max_iterations {
             // Check cancellation between iterations so an abort lands fast
             // instead of waiting for the next provider round-trip.
-            if self.is_cancelled(&campaign_id) {
+            if self.is_cancelled(campaign_id) {
                 tracing::info!(campaign_id = %campaign_id, "turn cancelled");
-                return;
+                return false;
             }
 
             // One provider call with the current context; the response either
             // advances the story or requests tool executions.
             let response =
-                match self.call_provider(&context, &campaign_id).await {
+                match self.call_provider(&context, campaign_id, phase).await {
                     Ok(response) => response,
                     Err(error) => {
                         // Provider failure (timeout, bad key, outage): surface
                         // the typed error and stop the loop rather than retry.
-                        self.fail(&campaign_id, error);
-                        return;
+                        self.fail(campaign_id, error);
+                        return false;
                     }
                 };
 
@@ -317,7 +553,7 @@ impl<S: Storage + 'static> TurnService<S> {
                 .default_model()
                 .unwrap_or_else(|| "unknown".to_string());
             let assistant = MessageDto::from_assistant(
-                &campaign_id,
+                campaign_id,
                 &response.message,
                 &model,
                 turn_index,
@@ -350,7 +586,7 @@ impl<S: Storage + 'static> TurnService<S> {
             context.push(response.message.clone());
             let tool_messages = self
                 .execute_tool_calls(
-                    &campaign_id,
+                    campaign_id,
                     &response.message,
                     turn_index,
                     &model,
@@ -393,25 +629,27 @@ impl<S: Storage + 'static> TurnService<S> {
         }
 
         // Three exits: a narrative answer (success), a cancel request, or the
-        // tool-iteration cap (degraded to an error event, never a crash).
+        // tool-iteration cap (degraded to an error event, never a crash). The
+        // boolean is returned so callers (e.g. worldgen) can settle state.
         if finished {
             // The GM produced narrative prose: declare the turn complete.
             self.bus.publish(AppEvent::TurnComplete {
-                campaign_id: campaign_id.clone(),
+                campaign_id: campaign_id.to_string(),
                 turn_index,
             });
             tracing::info!(campaign_id = %campaign_id, turn_index, "turn complete");
-        } else if self.is_cancelled(&campaign_id) {
+        } else if self.is_cancelled(campaign_id) {
             // Cancellation is a normal, quiet exit — no error event.
             tracing::info!(campaign_id = %campaign_id, "turn cancelled");
         } else {
             // Hit the iteration cap: degrade gracefully rather than erroring.
             self.bus.publish(AppEvent::TurnError {
-                campaign_id: campaign_id.clone(),
+                campaign_id: campaign_id.to_string(),
                 message: "tool loop exceeded its iteration cap".to_string(),
             });
             tracing::warn!(campaign_id = %campaign_id, "tool iteration cap reached");
         }
+        finished
     }
 
     /// Resolve the campaign's ruleset (or the built-in default).
@@ -446,10 +684,14 @@ impl<S: Storage + 'static> TurnService<S> {
     }
 
     /// Build the full provider conversation: system, history, current action.
+    ///
+    /// `user_message` is `None` for GM-initiated turns; the system prompt must
+    /// then itself instruct the GM to speak.
     async fn build_context(
         &self,
         campaign_id: &str,
-        user_message: &MessageDto,
+        user_message: Option<&MessageDto>,
+        phase: TurnPhase,
     ) -> Result<Vec<ChatMessage>> {
         // The campaign gates everything else: unknown id aborts early.
         let campaign = self.campaigns.get(campaign_id)?.ok_or_else(|| {
@@ -469,8 +711,12 @@ impl<S: Storage + 'static> TurnService<S> {
             HISTORY_WINDOW,
         )?;
 
-        let system =
-            self.build_system_message(&ruleset, &world_document, &characters)?;
+        let system = self.build_system_message(
+            &ruleset,
+            &world_document,
+            &characters,
+            phase,
+        )?;
         // The player's persona name makes mode prefixes read naturally ("Elara
         // says: ..."); before a persona exists (setup chat) fall back to "You".
         let character_name = characters
@@ -486,8 +732,10 @@ impl<S: Storage + 'static> TurnService<S> {
             // end (below) so the current input is always the last message;
             // skipping it here prevents the same line from appearing twice in
             // the prompt with its mode prefix duplicated.
-            if stored.id == user_message.id {
-                continue;
+            if let Some(current) = user_message {
+                if stored.id == current.id {
+                    continue;
+                }
             }
             // Rebuild each stored row as a chat message; the content blocks
             // carry over as-is (already provider-agnostic).
@@ -495,20 +743,48 @@ impl<S: Storage + 'static> TurnService<S> {
         }
         // Append the fresh user action explicitly so the model sees the
         // current input as the last message — the most recently relevant
-        // instruction, per the ordering contract above.
-        context.push(to_chat_message(character_name, user_message));
+        // instruction, per the ordering contract above. GM-initiated turns
+        // have no fresh input; their system prompt already speaks for itself.
+        if let Some(current) = user_message {
+            context.push(to_chat_message(character_name, current));
+        }
         Ok(context)
     }
 
-    /// Assemble the system prompt: ruleset + world state + characters + tools.
+    /// Assemble the system prompt: a phase-specific opening, the world state,
+    /// the character roster, and (outside setup) the tool list.
     fn build_system_message(
         &self,
         ruleset: &Ruleset,
         world_document: &serde_json::Value,
         characters: &[roleplayer_characters::domain::Character],
+        phase: TurnPhase,
     ) -> Result<ChatMessage> {
-        // Start from the ruleset's own prompt; every other section appends.
-        let mut sections = vec![ruleset.system_prompt.clone()];
+        // The opening section differs by phase: setup runs the pre-world Q&A,
+        // worldgen builds the world then opens the story, active plays normally.
+        let mut sections = match phase {
+            TurnPhase::Setup => vec![
+                "You are the Game Master preparing a new roleplay. \
+                 The world does not exist yet — you are building it together \
+                 with the player. Introduce yourself warmly in your first \
+                 message, then ask ONE clarifying question at a time about the \
+                 setting, the tone, and the player's character. Do not narrate \
+                 the story yet."
+                    .to_string(),
+            ],
+            TurnPhase::Worldgen => vec![
+                "You are the Game Master opening a new roleplay. The setup \
+                 conversation above settled the premise; now build it. Call the \
+                 tools to persist the world: use update_world for every \
+                 important place, condition, and fact, and create_character for \
+                 the player persona and the key NPCs. Batch as many tool calls \
+                 into each response as you can. Then, in your final message, \
+                 narrate a vivid opening scene that drops the player into the \
+                 world."
+                    .to_string(),
+            ],
+            TurnPhase::Active => vec![ruleset.system_prompt.clone()],
+        };
 
         // World state is presented as ground truth; only tool calls change it.
         sections.push(format!(
@@ -538,24 +814,29 @@ impl<S: Storage + 'static> TurnService<S> {
             sections.push(format!("\n## CHARACTERS\n{roster}"));
         }
 
-        // List every registered command so the model knows what it can call.
-        sections.push(
-            "\n## AVAILABLE TOOLS (use them to change the world)".to_string(),
-        );
-        for command in &self.commands {
-            sections.push(format!(
-                "- {}: {}",
-                command.id(),
-                command.description()
-            ));
+        // In setup there is nothing to write yet, so no tools are advertised;
+        // in worldgen and active the model gets the full tool set.
+        if phase != TurnPhase::Setup {
+            // List every registered command so the model knows what it can call.
+            sections.push(
+                "\n## AVAILABLE TOOLS (use them to change the world)"
+                    .to_string(),
+            );
+            for command in &self.commands {
+                sections.push(format!(
+                    "- {}: {}",
+                    command.id(),
+                    command.description()
+                ));
+            }
+            // Nudge the model toward tool use: without this reminder, models
+            // tend to narrate state changes instead of calling tools, which
+            // would make the world document diverge from the story.
+            sections.push(
+                "\nRemember: narrative free text never changes the world. Only tool calls do."
+                    .to_string(),
+            );
         }
-        // Nudge the model toward tool use: without this reminder, models tend
-        // to narrate state changes instead of calling tools, which would make
-        // the world document diverge from the story.
-        sections.push(
-            "\nRemember: narrative free text never changes the world. Only tool calls do."
-                .to_string(),
-        );
 
         // Explain the two player input modes so the GM parses the prefixed
         // history correctly: `says: "..."` is dialogue, `acts: ...` narration.
@@ -575,6 +856,7 @@ impl<S: Storage + 'static> TurnService<S> {
         &self,
         context: &[ChatMessage],
         campaign_id: &str,
+        phase: TurnPhase,
     ) -> Result<roleplayer_core::llm::CompletionResponse> {
         // The default adapter from the registry; a missing default is a
         // configuration error, surfaced as such.
@@ -586,13 +868,16 @@ impl<S: Storage + 'static> TurnService<S> {
             AppError::Config("no default model configured".to_string())
         })?;
 
-        // Expose tools to the model only when the provider supports tool use.
-        let tools: Vec<ToolSchema> = if capabilities.tool_use {
-            self.commands.iter().map(|command| command.schema()).collect()
-        } else {
-            // Capability degradation (§5.5): no tool support, narrate only.
-            vec![]
-        };
+        // Expose tools to the model only when the provider supports tool use
+        // AND the phase allows writing (setup must not mutate a world that
+        // does not exist yet).
+        let tools: Vec<ToolSchema> =
+            if phase != TurnPhase::Setup && capabilities.tool_use {
+                self.commands.iter().map(|command| command.schema()).collect()
+            } else {
+                // Capability degradation (§5.5): no tool support, narrate only.
+                vec![]
+            };
 
         let request = CompletionRequest {
             model,
@@ -696,32 +981,16 @@ impl<S: Storage + 'static> TurnService<S> {
 
             match command.execute(arguments.clone(), &mut context) {
                 Ok(result) => {
-                    // Apply + audit every declared mutation (§4.6).
-                    if !context.mutations.is_empty() {
-                        self.world
-                            .apply_mutations(
-                                campaign_id,
-                                &context.mutations,
-                                tool,
-                                arguments,
-                                // No transcript link: tool rows are linked via
-                                // their own message id downstream, not here.
-                                None,
-                            )
-                            .unwrap_or_else(|error| {
-                                // A failed mutation write is logged loudly, but
-                                // the tool result still returns — the GM saw a
-                                // successful command, so narrating a failure
-                                // now would confuse the loop.
-                                tracing::error!(
-                                    campaign_id = %campaign_id,
-                                    tool,
-                                    %error,
-                                    "failed to apply world mutations"
-                                );
-                                Vec::new()
-                            });
-                    }
+                    // Apply + audit every declared mutation (§4.6). Mutations
+                    // route by kind: world keys go to world_state, character
+                    // creations to the characters service — the two writers
+                    // turnflow already owns.
+                    self.apply_mutations(
+                        campaign_id,
+                        &context.mutations,
+                        tool,
+                        arguments,
+                    );
                     self.bus.publish(AppEvent::TurnToolResult {
                         campaign_id: campaign_id.to_string(),
                         tool: tool.clone(),
@@ -772,6 +1041,80 @@ impl<S: Storage + 'static> TurnService<S> {
             }
         }
         Ok(results)
+    }
+
+    /// Apply a batch of declared mutations, routing each kind to its writer.
+    ///
+    /// `SetWorldKey` mutations go to world_state (which writes the audit trail
+    /// — the anti-hallucination record). `CreateCharacter` mutations go to the
+    /// characters service; a character row with its own `created_at` IS the
+    /// record, so no `state_changes` audit row is written for it (that table
+    /// tracks before/after world-document diffs). Failures are logged loudly
+    /// but never crash the turn — the tool result already told the model it
+    /// succeeded, so the loop keeps going.
+    ///
+    /// Public so integration tests can exercise the routing directly.
+    pub fn apply_mutations(
+        &self,
+        campaign_id: &str,
+        mutations: &[StateMutation],
+        tool: &str,
+        arguments: &serde_json::Value,
+    ) {
+        // Route world-key mutations as a batch to the audit trail.
+        let world_mutations: Vec<StateMutation> = mutations
+            .iter()
+            .filter(|mutation| {
+                matches!(mutation, StateMutation::SetWorldKey { .. })
+            })
+            .cloned()
+            .collect();
+        if !world_mutations.is_empty() {
+            if let Err(error) = self.world.apply_mutations(
+                campaign_id,
+                &world_mutations,
+                tool,
+                arguments,
+                // No transcript link: tool rows are linked via their own
+                // message id downstream, not here.
+                None,
+            ) {
+                tracing::error!(
+                    campaign_id = %campaign_id,
+                    tool,
+                    %error,
+                    "failed to apply world mutations"
+                );
+            }
+        }
+        // Route character creations individually to the characters service.
+        for mutation in mutations {
+            let StateMutation::CreateCharacter { name, bio, is_player, stats } =
+                mutation
+            else {
+                continue;
+            };
+            match self.characters.create(NewCharacter {
+                campaign_id: campaign_id.to_string(),
+                name: name.clone(),
+                bio: bio.clone(),
+                is_player: *is_player,
+                stats: stats.clone(),
+            }) {
+                Ok(character) => tracing::info!(
+                    campaign_id = %campaign_id,
+                    character_id = %character.id,
+                    name = %character.name,
+                    "GM created character"
+                ),
+                Err(error) => tracing::error!(
+                    campaign_id = %campaign_id,
+                    name = %name,
+                    %error,
+                    "failed to create character from GM tool call"
+                ),
+            }
+        }
     }
 
     fn publish_turn_message(&self, message: &MessageDto) {

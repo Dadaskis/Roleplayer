@@ -74,6 +74,16 @@ impl<S: Storage> WorldStateService<S> {
                         created_at: roleplayer_core::now_rfc3339(),
                     }
                 }
+                // Any other mutation kind reaching this applier is a routing
+                // bug in the caller (turnflow routes character creations to
+                // the characters service, never here) — surface it loudly
+                // instead of silently skipping the write.
+                StateMutation::CreateCharacter { .. } => {
+                    return Err(roleplayer_core::errors::AppError::Domain(
+                        "world applier cannot handle character mutations"
+                            .to_string(),
+                    ));
+                }
             };
             // Collect every audit entry so the caller gets the full batch.
             changes.push(change);

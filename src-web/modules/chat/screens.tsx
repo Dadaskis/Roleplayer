@@ -10,8 +10,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { onTurnEvent, type MessageDto, type MessageMode } from "../../core/api/invoke"
 import { Button } from "../../core/ui/components"
-import { cancelTurn, listMessages, sendTurn } from "./api"
+import { cancelTurn, listMessages, sendTurn, startSetupIntro } from "./api"
 import { useChatStore } from "./store"
+import type { CampaignStatus } from "../campaigns"
 
 // Map wire roles to human-facing labels (the GM is the "assistant" role in
 // the protocol; "tool" rows are engine-internal and never reach this label).
@@ -66,7 +67,7 @@ function MessageBubble({ message }: { message: MessageDto }) {
   )
 }
 
-export function ChatScreen({ campaignId }: { campaignId: string }) {
+export function ChatScreen({ campaignId, status }: { campaignId: string; status: CampaignStatus | undefined }) {
   // The cache handle is used to invalidate the transcript after turn_complete.
   const queryClient = useQueryClient()
   // Composer text; local state is fine — nothing else reads or writes it.
@@ -76,6 +77,10 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
   const [mode, setMode] = useState<MessageMode>("action")
   // The scroll container; used to jump to the newest message on updates.
   const scrollRef = useRef<HTMLDivElement>(null)
+  // Guards the setup-intro kick from double-firing within one screen instance.
+  // Best-effort dedup: StrictMode's remount creates a fresh ref, so the
+  // backend's own idempotency guard is the real backstop.
+  const introRequested = useRef(false)
 
   // Reactive store reads: each subscription re-renders only this component
   // when its slice changes; ?? guards keep every value a concrete default.
@@ -111,6 +116,19 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
     // Deps is just [loaded]: campaignId changes remount the whole screen, so
     // it cannot go stale here; `store` is stable by construction.
   }, [loaded]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The GM opens the session itself: when a fresh setup campaign mounts with
+  // no transcript yet, ask the backend to run the setup-intro turn. The
+  // backend guard (and this ref) keep StrictMode's double mount from
+  // double-starting it; the intro's message then streams/persists normally.
+  useEffect(() => {
+    if (status === "setup" && loaded && loaded.length === 0 && !introRequested.current) {
+      introRequested.current = true
+      startSetupIntro(campaignId).catch(() => {})
+    }
+    // Deps: the trigger needs the campaign phase and the first transcript
+    // fetch; both settle shortly after mount.
+  }, [status, loaded, campaignId])
 
   // Subscribe to the live turn-event stream for this campaign.
   //

@@ -1,5 +1,10 @@
 // Campaign wire types — mirror the Rust `Campaign`/`NewCampaign` structs.
 
+// The lifecycle state of a campaign (mirrors the Rust CampaignStatus enum):
+// "setup" → the GM asks clarifying questions; "worldgen" → the GM generates
+// the world + characters (transient); "active" → normal play.
+export type CampaignStatus = "setup" | "worldgen" | "active"
+
 /** A persisted campaign. `settings` is an opaque JSON bag the GM may fill;
  *  `ruleset_id` links the GM's prompt preset when one is chosen. */
 export interface Campaign {
@@ -9,6 +14,8 @@ export interface Campaign {
   description: string
   // Null when no ruleset is bound; a full join is the backend's concern.
   ruleset_id: string | null
+  // Which lifecycle phase the campaign is in (backend-driven state machine).
+  status: CampaignStatus
   // Arbitrary JSON the GM may grow; untyped here by design (§5.4 JSON-first).
   settings: unknown
   // ISO-8601 creation stamp, set once by the backend.

@@ -6,7 +6,7 @@ use roleplayer_core::errors::Result;
 use roleplayer_core::storage::Storage;
 use roleplayer_core::{new_id, now_rfc3339};
 
-use crate::domain::{Campaign, NewCampaign, UpdateCampaign};
+use crate::domain::{Campaign, CampaignStatus, NewCampaign, UpdateCampaign};
 use crate::storage as repo;
 
 /// Orchestrates campaign lifecycle: validates, persists, and returns entities.
@@ -47,6 +47,9 @@ impl<S: Storage> CampaignService<S> {
             // May be None; the turn flow later falls back to the built-in
             // ruleset when no explicit one is bound here.
             ruleset_id: input.ruleset_id,
+            // Every new campaign starts in the setup phase: the GM asks
+            // clarifying questions before the world is generated (§5.4).
+            status: CampaignStatus::Setup,
             // New campaigns carry an empty settings document; the UI adds keys
             // later. A JSON object (not a typed struct) keeps this
             // forward-compatible (§5.4: "any kind of data" starts as JSON).
@@ -100,6 +103,9 @@ impl<S: Storage> CampaignService<S> {
             name: input.name.trim().to_string(),
             description: input.description.trim().to_string(),
             ruleset_id: input.ruleset_id,
+            // Status is backend-driven (a state machine, §5.4) and never
+            // editable through the generic update contract.
+            status: existing.status,
             // Settings aren't editable yet, so carry the stored value over
             // untouched; only name/description/ruleset change on update.
             settings: existing.settings,
@@ -122,5 +128,28 @@ impl<S: Storage> CampaignService<S> {
         let deleted = repo::delete(self.storage.as_ref(), campaign_id)?;
         tracing::info!(campaign_id = %campaign_id, deleted, "campaign delete requested");
         Ok(deleted)
+    }
+
+    /// Transition a campaign's lifecycle status; `None` when the id is
+    /// unknown. This is a bare setter — the state machine (which transitions
+    /// are legal) is enforced by the callers in `turnflow` (`start_roleplay`,
+    /// `run_worldgen`), never by the generic update contract.
+    pub fn set_status(
+        &self,
+        campaign_id: &str,
+        status: CampaignStatus,
+    ) -> Result<Option<Campaign>> {
+        // Update in place (a transition touches status + its timestamp only),
+        // then re-read so the caller sees the persisted truth.
+        let changed = repo::set_status(
+            self.storage.as_ref(),
+            campaign_id,
+            status,
+            &now_rfc3339(),
+        )?;
+        if !changed {
+            return Ok(None);
+        }
+        repo::get(self.storage.as_ref(), campaign_id)
     }
 }

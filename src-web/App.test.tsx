@@ -10,7 +10,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 // fireEvent over userEvent: the shell's transitions are simple click flows and
 // the shorter API keeps this smoke test focused on navigation, not typing.
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 // jsdom does not implement Element.prototype.scrollTo (a real browser does).
@@ -43,6 +43,8 @@ const campaign = {
   name: "The Duskmoor Pact",
   description: "A blood oath under a dying star.",
   ruleset_id: null,
+  // Active by default: the play loop, with no setup UI or intro kick.
+  status: "active",
   settings: null,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-02T00:00:00Z",
@@ -238,5 +240,38 @@ describe("App stage flow", () => {
     fireEvent.click(await screen.findByText("The Duskmoor Pact"))
     expect(await screen.findByText("The world is quiet.")).toBeInTheDocument()
     expect(screen.getByText("Type an action to begin the roleplay.")).toBeInTheDocument()
+  })
+
+  it("runs the setup flow: GM intro + Start roleplay", async () => {
+    // A fresh campaign is in the setup phase with an empty transcript.
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "list_campaigns":
+          return Promise.resolve([{ ...campaign, status: "setup" }])
+        case "get_campaign":
+          return Promise.resolve({ ...campaign, status: "setup" })
+        case "list_messages":
+          return Promise.resolve([])
+        default:
+          return Promise.resolve(null)
+      }
+    })
+
+    renderApp()
+    fireEvent.click(await screen.findByText("The Duskmoor Pact"))
+    await screen.findByPlaceholderText("Describe your action…")
+
+    // Opening a fresh setup chat asks the backend to run the GM's intro turn
+    // (the GM opens the session itself). waitFor: the trigger waits for the
+    // campaign status query to resolve, so it fires a tick after mount.
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("start_setup_intro", { campaignId: "c1" }),
+    )
+
+    // The setup phase offers the Start-roleplay affordance; clicking it asks
+    // the backend to generate the world + characters and open the story.
+    expect(screen.getByRole("button", { name: "Start roleplay" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Start roleplay" }))
+    expect(invokeMock).toHaveBeenCalledWith("start_roleplay", { campaignId: "c1" })
   })
 })

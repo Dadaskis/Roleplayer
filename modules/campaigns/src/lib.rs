@@ -23,5 +23,5 @@ pub mod commands;
 
 // Re-export the public surface so consumers import the module name rather than
 // reaching into sub-modules; the internals stay private (§5.6).
-pub use domain::{Campaign, NewCampaign, UpdateCampaign};
+pub use domain::{Campaign, CampaignStatus, NewCampaign, UpdateCampaign};
 pub use service::CampaignService;

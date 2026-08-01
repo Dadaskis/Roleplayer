@@ -10,7 +10,7 @@ use roleplayer_core::errors::Result;
 use roleplayer_core::storage::Storage;
 use rusqlite::Row;
 
-use crate::domain::Campaign;
+use crate::domain::{Campaign, CampaignStatus};
 
 fn map_campaign(row: &Row<'_>) -> rusqlite::Result<Campaign> {
     // Translate one SQLite row into a domain entity; every column is fetched
@@ -22,6 +22,8 @@ fn map_campaign(row: &Row<'_>) -> rusqlite::Result<Campaign> {
         description: row.get("description")?,
         // Optional FK: NULL in SQL maps to None (no linked ruleset).
         ruleset_id: row.get("ruleset_id")?,
+        // The lifecycle status wire string; unknown values degrade to Setup.
+        status: CampaignStatus::from_wire(&row.get::<_, String>("status")?),
         // `settings` is stored as JSON text; parse it back, degrading to an
         // empty object if a row is corrupt so the UI never crashes (§5.10).
         settings: row
@@ -40,12 +42,12 @@ pub fn insert<S: Storage + ?Sized>(
 ) -> Result<()> {
     // JSON values are stored as text in SQLite; serialize once for the bind.
     let settings = campaign.settings.to_string();
-    // Placeholders ?1..?7 bind in column order; binding, never string-building,
+    // Placeholders ?1..?8 bind in column order; binding, never string-building,
     // keeps user data out of the SQL text (§5.16).
     storage
         .execute(
-            "INSERT INTO campaigns (id, name, description, ruleset_id, settings, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO campaigns (id, name, description, ruleset_id, status, settings, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             &[
                 // The id and timestamps come from the backend caller, which the
                 // app crate fills in — never from the client (§5.4).
@@ -54,6 +56,8 @@ pub fn insert<S: Storage + ?Sized>(
                 &campaign.description,
                 // Option<String> binds as NULL when absent; the FK stays open.
                 &campaign.ruleset_id,
+                // Status is backend-set only; every new campaign is a setup.
+                &campaign.status.as_str(),
                 &settings,
                 &campaign.created_at,
                 &campaign.updated_at,
@@ -63,12 +67,30 @@ pub fn insert<S: Storage + ?Sized>(
         .map(|_changed| ())
 }
 
+/// Set a campaign's lifecycle status (backend-driven state transition).
+/// Returns whether a row was actually updated.
+pub fn set_status<S: Storage + ?Sized>(
+    storage: &S,
+    campaign_id: &str,
+    status: CampaignStatus,
+    updated_at: &str,
+) -> Result<bool> {
+    // Only the status and its timestamp change; the editable fields are
+    // untouched so a transition never clobbers user data.
+    let changed = storage.execute(
+        "UPDATE campaigns SET status = ?1, updated_at = ?2 WHERE id = ?3",
+        &[&status.as_str(), &updated_at, &campaign_id],
+    )?;
+    // More than zero changed rows means the campaign existed.
+    Ok(changed > 0)
+}
+
 /// List all campaigns, newest first.
 pub fn list<S: Storage + ?Sized>(storage: &S) -> Result<Vec<Campaign>> {
     storage.query_vec(
         // The full column set matches map_campaign's by-name fetches; DESC on
         // created_at surfaces the newest campaign at index 0 for the sidebar.
-        "SELECT id, name, description, ruleset_id, settings, created_at, updated_at
+        "SELECT id, name, description, ruleset_id, status, settings, created_at, updated_at
          FROM campaigns ORDER BY created_at DESC",
         &[],
         map_campaign,
@@ -82,7 +104,7 @@ pub fn get<S: Storage + ?Sized>(
 ) -> Result<Option<Campaign>> {
     // The id filter is bound (?1); query_row yields None when no row matches.
     storage.query_row(
-        "SELECT id, name, description, ruleset_id, settings, created_at, updated_at
+        "SELECT id, name, description, ruleset_id, status, settings, created_at, updated_at
          FROM campaigns WHERE id = ?1",
         &[&campaign_id],
         map_campaign,
@@ -149,6 +171,8 @@ mod tests {
             name: name.to_string(),
             description: String::new(),
             ruleset_id: None,
+            // Every test campaign starts in the default setup phase.
+            status: CampaignStatus::Setup,
             settings: serde_json::json!({}),
             created_at: now.clone(),
             updated_at: now,

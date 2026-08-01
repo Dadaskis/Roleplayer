@@ -22,6 +22,12 @@ use serde_json::Value;
 pub enum StateMutation {
     /// Set one key in the campaign's `world_state` document.
     SetWorldKey { key: String, value: Value },
+    /// Create a character (the player persona or an NPC) in the campaign.
+    ///
+    /// Deliberately carries only generic fields — no `Character` type from the
+    /// characters module may leak into core (§5.3). The turn flow routes this
+    /// mutation to the characters service, which owns the row.
+    CreateCharacter { name: String, bio: String, is_player: bool, stats: Value },
 }
 
 /// Read-only execution context handed to a command.

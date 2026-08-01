@@ -34,6 +34,10 @@ data, the database is the truth.
   adapters plug into the same seam. Capability flags let the app degrade
   gracefully (no streaming → one-shot, no tools → narration only).
 - **Streamed turns** with live typing and cancellation.
+- **A setup phase before the story**: a new campaign opens with the GM asking
+  clarifying questions itself (no waiting for you to speak first). Clicking
+  "Start roleplay" makes the GM generate a detailed world and the key
+  characters via its tools, then opens the story — after that, normal play.
 - **Campaigns, characters, rulesets** — everything is document-style JSON
   columns plus migrations, so new data shapes never need schema churn.
 - **World state** with an audit trail of every GM mutation.

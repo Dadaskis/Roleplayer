@@ -39,6 +39,14 @@ async fn full_turn_with_mock_provider_completes() {
             ruleset_id: None,
         })
         .expect("create campaign");
+    // A fresh campaign is in setup; this test exercises the play loop, so flip
+    // it to active the way start_roleplay would.
+    campaigns
+        .set_status(
+            &campaign.id,
+            roleplayer_campaigns::domain::CampaignStatus::Active,
+        )
+        .expect("activate campaign");
 
     let rulesets = Arc::new(RulesetService::new(storage.clone()));
     rulesets.ensure_default().expect("seed ruleset");

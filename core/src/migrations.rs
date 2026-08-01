@@ -12,7 +12,7 @@ use rusqlite_migration::{Migrations, M};
 /// context (heap allocation). Called once at database open; appending a new
 /// migration is adding one entry at the END — never editing or reordering.
 pub fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(SCHEMA_V1), M::up(SCHEMA_V2)])
+    Migrations::new(vec![M::up(SCHEMA_V1), M::up(SCHEMA_V2), M::up(SCHEMA_V3)])
 }
 
 /// Version 1 — the initial schema.
@@ -155,10 +155,23 @@ ALTER TABLE messages ADD COLUMN mode TEXT NOT NULL DEFAULT 'action'
     CHECK (mode IN ('action', 'speech'));
 "#;
 
+/// Version 3 — campaign lifecycle status.
+///
+/// A campaign starts in `setup` (the GM asks clarifying questions before the
+/// world exists), moves to `worldgen` while the GM generates the world and
+/// characters (a transient, single-flight state), and finally `active` for
+/// normal play. `NOT NULL DEFAULT 'setup'` backfills existing rows as setups;
+/// the `CHECK` keeps the state machine closed at the DB boundary (§5.10).
+const SCHEMA_V3: &str = r#"
+ALTER TABLE campaigns ADD COLUMN status TEXT NOT NULL DEFAULT 'setup'
+    CHECK (status IN ('setup', 'worldgen', 'active'));
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::migrations;
     use super::SCHEMA_V1;
+    use super::SCHEMA_V2;
     use crate::storage::{Database, Storage};
 
     #[test]
@@ -229,5 +242,39 @@ mod tests {
             })
             .expect("mode column exists after v2");
         assert_eq!(mode, "action");
+    }
+
+    #[test]
+    fn v3_adds_campaign_status_with_setup_default() {
+        // Prove the v2 -> v3 upgrade: a campaign row written under v2 (no
+        // `status` column) reads back as 'setup' once v3 is applied.
+        use rusqlite_migration::{Migrations, M};
+
+        let mut connection =
+            rusqlite::Connection::open_in_memory().expect("in-memory conn");
+        // v2 only — the schema a pre-upgrade database has.
+        Migrations::new(vec![M::up(SCHEMA_V1), M::up(SCHEMA_V2)])
+            .to_latest(&mut connection)
+            .expect("v1+v2 apply");
+        connection
+            .execute(
+                "INSERT INTO campaigns (id, name, description, ruleset_id, settings, created_at, updated_at)
+                 VALUES ('c1', 'Camp', '', NULL, '{}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("seed v2 campaign");
+
+        // The real upgrade path (v1+v2 -> v3) over the existing row.
+        migrations().to_latest(&mut connection).expect("v3 applies over v2");
+
+        // The DEFAULT must have backfilled the v2 row as a setup campaign.
+        let status: String = connection
+            .query_row(
+                "SELECT status FROM campaigns WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("status column exists after v3");
+        assert_eq!(status, "setup");
     }
 }

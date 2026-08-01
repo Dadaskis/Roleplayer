@@ -27,3 +27,16 @@ export function listMessages(campaignId: string, limit: number): Promise<Message
   // seeds its store from this array on mount.
   return call<MessageDto[]>("list_messages", { campaignId, limit })
 }
+
+// Ask the backend to kick the setup-intro turn (the GM opens the session
+// itself). Returns whether a turn actually started — the backend's guard makes
+// repeated calls (StrictMode double-mount) safe no-ops.
+export function startSetupIntro(campaignId: string): Promise<boolean> {
+  return call<boolean>("start_setup_intro", { campaignId })
+}
+
+// Start the roleplay: the GM generates the world + characters and opens the
+// story. Completion arrives as turn events and the campaign's status change.
+export function startRoleplay(campaignId: string): Promise<void> {
+  return call<void>("start_roleplay", { campaignId })
+}

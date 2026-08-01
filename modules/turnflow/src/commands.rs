@@ -53,6 +53,47 @@ pub fn send_turn(
     Ok(turn_index)
 }
 
+/// Command: kick off the setup-intro turn (the GM opens the session itself).
+/// Returns whether a turn was actually started; the guard makes repeated calls
+/// (StrictMode double-mount, double-clicks) safe no-ops.
+#[tauri::command]
+pub fn start_setup_intro(
+    service: State<'_, SharedTurnService>,
+    campaign_id: String,
+) -> Result<bool, ErrorDto> {
+    // The idempotency check lives in the service (under the single writer),
+    // not here — commands stay thin (§5.2).
+    let started =
+        service.start_setup_intro(&campaign_id).map_err(ErrorDto::from)?;
+    if started {
+        // The intro runs in the background on tauri's runtime.
+        let service = service.inner().clone();
+        tauri::async_runtime::spawn(async move {
+            service.run_setup_intro(campaign_id).await;
+        });
+    }
+    Ok(started)
+}
+
+/// Command: start the roleplay — the GM generates the world + characters and
+/// opens the story. Returns once the generation flow has started; completion
+/// arrives as turn events and the campaign's status change.
+#[tauri::command]
+pub fn start_roleplay(
+    service: State<'_, SharedTurnService>,
+    campaign_id: String,
+) -> Result<(), ErrorDto> {
+    // Validate + flip setup → worldgen synchronously; the guard rejects a
+    // double-invocation (a second click sees Worldgen and refuses).
+    service.start_roleplay(&campaign_id).map_err(ErrorDto::from)?;
+    // Run the worldgen turn on tauri's runtime; it settles the status itself.
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn(async move {
+        service.run_worldgen(campaign_id).await;
+    });
+    Ok(())
+}
+
 /// Command: cancel the running turn for a campaign.
 #[tauri::command]
 pub fn cancel_turn(

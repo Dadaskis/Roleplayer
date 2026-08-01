@@ -193,7 +193,20 @@ export function CampaignsScreen({
                   on the name/description block enters the campaign's chat. */}
               <button className="campaign-row-open" onClick={() => onOpenCampaign(campaign.id)}>
                 <div className="col" style={{ gap: 2 }}>
-                  <span className="campaign-row-name">{campaign.name}</span>
+                  <span className="campaign-row-name">
+                    {campaign.name}
+                    {/* A tiny lifecycle badge tells the player which campaigns
+                        are still in setup (GM asking questions) versus live. */}
+                    {campaign.status === "setup" ? (
+                      <span className="badge badge-accent" style={{ marginLeft: 8 }}>
+                        in setup
+                      </span>
+                    ) : campaign.status === "active" ? (
+                      <span className="badge" style={{ marginLeft: 8 }}>
+                        active
+                      </span>
+                    ) : null}
+                  </span>
                   {/* Subtitle only when a premise was written at creation. */}
                   {campaign.description ? <span className="muted">{campaign.description}</span> : null}
                   {/* Last activity: a faint timestamp signals freshness and
