@@ -411,25 +411,6 @@ a:hover {
   font-style: italic;
 }
 
-.msg-tools {
-  /* Tool chips row under a message; wraps when the GM called many tools. */
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 4px;
-}
-
-.tool-chip {
-  /* Tool activity as a small mono chip — an annotation, not a message. */
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
-  background: var(--bg-elevated-2);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 8px;
-}
-
 /* ---------- chat stage: composer ---------- */
 
 .composer-dock {

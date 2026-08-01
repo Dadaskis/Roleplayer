@@ -79,6 +79,44 @@ function stubBackend() {
   })
 }
 
+// A transcript whose GM turn called tools: a tool-only GM row (no prose), the
+// engine's tool bookkeeping row, and one real narrated line. The UI must show
+// only the narration — the machinery stays hidden.
+const toolHeavyTranscript = [
+  {
+    id: "gm-tool-only",
+    campaign_id: "c1",
+    role: "assistant",
+    content: [
+      { type: "tool_call", id: "t1", tool: "update_world", arguments: { key: "room", value: "dark" } },
+    ],
+    mode: "action",
+    model: "mock",
+    turn_index: 1,
+    created_at: "2026-01-01T00:00:00Z",
+  },
+  {
+    id: "tool-result",
+    campaign_id: "c1",
+    role: "tool",
+    content: [{ type: "tool_result", id: "t1", result: { ok: true } }],
+    mode: "action",
+    model: "mock",
+    turn_index: 1,
+    created_at: "2026-01-01T00:00:00Z",
+  },
+  {
+    id: "gm-narration",
+    campaign_id: "c1",
+    role: "assistant",
+    content: [{ type: "text", text: "The door creaks open." }],
+    mode: "action",
+    model: "mock",
+    turn_index: 1,
+    created_at: "2026-01-01T00:00:00Z",
+  },
+]
+
 describe("App stage flow", () => {
   beforeEach(() => {
     // Reset both stores to pristine state and re-stub the backend between
@@ -140,5 +178,66 @@ describe("App stage flow", () => {
     // The lobby is visible again, with the title and campaign row restored.
     expect(screen.getByText("Roleplayer")).toBeInTheDocument()
     expect(screen.getByText("The Duskmoor Pact")).toBeInTheDocument()
+  })
+
+  it("hides the GM's tool calls from the transcript", async () => {
+    // Point list_messages at a transcript full of tool machinery plus one
+    // real narrated line; the machinery must never reach the player.
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "list_campaigns":
+          return Promise.resolve([campaign])
+        case "get_campaign":
+          return Promise.resolve(campaign)
+        case "list_messages":
+          return Promise.resolve(toolHeavyTranscript)
+        default:
+          return Promise.resolve(null)
+      }
+    })
+
+    renderApp()
+    fireEvent.click(await screen.findByText("The Duskmoor Pact"))
+    // The narrated line is the only thing the player should see.
+    expect(await screen.findByText("The door creaks open.")).toBeInTheDocument()
+
+    // No tool chips (their tool names never reach the DOM), no "done" marker,
+    // and no "Tool" label or bookkeeping rows rendered.
+    expect(screen.queryByText(/update_world/)).not.toBeInTheDocument()
+    expect(screen.queryByText("✓ done")).not.toBeInTheDocument()
+    expect(screen.queryByText("Tool")).not.toBeInTheDocument()
+  })
+
+  it("shows the empty-state nudge when only tool rows exist", async () => {
+    // A degenerate transcript: only engine bookkeeping rows (no narration).
+    // The chat must show the "world is quiet" nudge, not a blank screen.
+    invokeMock.mockImplementation((command: string) => {
+      switch (command) {
+        case "list_campaigns":
+          return Promise.resolve([campaign])
+        case "get_campaign":
+          return Promise.resolve(campaign)
+        case "list_messages":
+          return Promise.resolve([
+            {
+              id: "tool-row",
+              campaign_id: "c1",
+              role: "tool",
+              content: [{ type: "tool_result", id: "t1", result: { ok: true } }],
+              mode: "action",
+              model: "mock",
+              turn_index: 1,
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ])
+        default:
+          return Promise.resolve(null)
+      }
+    })
+
+    renderApp()
+    fireEvent.click(await screen.findByText("The Duskmoor Pact"))
+    expect(await screen.findByText("The world is quiet.")).toBeInTheDocument()
+    expect(screen.getByText("Type an action to begin the roleplay.")).toBeInTheDocument()
   })
 })

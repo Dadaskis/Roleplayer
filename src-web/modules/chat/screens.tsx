@@ -8,13 +8,13 @@
 import { useEffect, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 
-import { onTurnEvent, type ContentBlock, type MessageDto, type MessageMode } from "../../core/api/invoke"
+import { onTurnEvent, type MessageDto, type MessageMode } from "../../core/api/invoke"
 import { Button } from "../../core/ui/components"
 import { cancelTurn, listMessages, sendTurn } from "./api"
 import { useChatStore } from "./store"
 
 // Map wire roles to human-facing labels (the GM is the "assistant" role in
-// the protocol; "tool" rows are engine-internal and get the plain name).
+// the protocol; "tool" rows are engine-internal and never reach this label).
 function roleLabel(role: MessageDto["role"]): string {
   // One label per protocol role; the switch is exhaustive over the union.
   switch (role) {
@@ -27,43 +27,26 @@ function roleLabel(role: MessageDto["role"]): string {
     case "system":
       return "System"
     case "tool":
-      // Tool rows are engine bookkeeping; the plain name keeps it honest.
+      // Tool rows are engine bookkeeping; filtered out before rendering.
       return "Tool"
   }
 }
 
-// Render one content block: tool calls/results surface as small mono chips
-// rather than prose so the transcript shows *what the GM did* — and tool
-// activity annotates the narration instead of interrupting it as a fake
-// message.
-function BlockView({ block }: { block: ContentBlock }) {
-  // Discriminate on the `type` tag — each variant renders differently.
-  switch (block.type) {
-    case "text":
-      // Prose renders verbatim; it is the bubble's main reading content.
-      return <>{block.text}</>
-    case "tool_call":
-      // A called tool becomes a compact mono chip naming the tool; the
-      // arguments stay hidden (raw JSON would bury the human narrative).
-      return <span className="tool-chip">⚙ {block.tool}</span>
-    case "tool_result":
-      // Results collapse to a neutral "done" marker — outcome detail is not
-      // something the player needs in the main transcript.
-      return <span className="tool-chip">✓ done</span>
-  }
-}
-
 function MessageBubble({ message }: { message: MessageDto }) {
-  // Pull the prose blocks out for the main body and detect tool activity to
-  // render the chip row below. Filter then map: concatenate the text blocks.
+  // Pull the prose blocks out for the main body. Filter then map: discard
+  // tool blocks (hidden from the player) and concatenate the remaining text.
   const text = message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")
-  // some() is a short-circuiting check — stops at the first tool block.
-  const hasTools = message.content.some((block) => block.type === "tool_call" || block.type === "tool_result")
 
   // System lines are meta (session notes, rare) and get their own quiet row:
   // centered, tiny, no bubble, no label — clearly not part of the story.
   if (message.role === "system") {
     return <div className="msg-system">{text}</div>
+  }
+
+  // A GM message that carried ONLY tool calls (no prose) has nothing to show
+  // once tool blocks are hidden — render nothing rather than an empty bubble.
+  if (!text) {
+    return null
   }
 
   // The user's own message is a short action statement: right-aligned bubble.
@@ -78,17 +61,7 @@ function MessageBubble({ message }: { message: MessageDto }) {
           roleLabel maps engine roles to human-facing names (GM/You). */}
       <span className="msg-label">{isUser ? (isSpeech ? "You say" : "You") : roleLabel(message.role)}</span>
       {/* pre-wrap preserves line breaks from the GM without a <br> pass. */}
-      {text ? <div className="msg-body">{text}</div> : null}
-      {/* Tool chips render only when the message carried tool blocks. */}
-      {hasTools ? (
-        // One chip per block, wrapped; blocks are immutable per message and
-        // never reorder, so index keys cannot cause reconciliation churn.
-        <div className="msg-tools">
-          {message.content.map((block, index) => (
-            <BlockView key={index} block={block} />
-          ))}
-        </div>
-      ) : null}
+      <div className="msg-body">{text}</div>
     </div>
   )
 }
@@ -109,8 +82,12 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
   const messages = useChatStore((state) => state.byCampaign[campaignId] ?? [])
   const draft = useChatStore((state) => state.drafts[campaignId] ?? "")
   const streaming = useChatStore((state) => state.streaming[campaignId] ?? false)
-  const activity = useChatStore((state) => state.activity[campaignId] ?? "")
   const error = useChatStore((state) => state.errors[campaignId] ?? null)
+  // Tool rows are engine bookkeeping the GM produces while calling tools;
+  // they are filtered out so the player sees only the story. Computing the
+  // visible list once keeps the empty-state guard and the bubble list in
+  // agreement (a degenerate tool-only transcript still shows the nudge).
+  const visibleMessages = messages.filter((message) => message.role !== "tool")
   // The imperative store handle is stable and non-reactive: safe to call from
   // event handlers and effects without subscribing to any slice.
   const store = useChatStore.getState()
@@ -271,9 +248,11 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
           above the composer so the composer never floats mid-window. */}
       <div className="transcript" ref={scrollRef}>
         <div className="transcript-inner">
-          {/* Empty state: only when there is neither transcript nor draft —
-              a brand-new campaign starts with this quiet nudge to act. */}
-          {messages.length === 0 && !draft ? (
+          {/* Empty state: only when there is neither visible transcript nor
+              draft — a brand-new campaign starts with this quiet nudge to
+              act. Guarded on the filtered list (not the raw messages) so a
+              degenerate tool-only transcript still shows the nudge. */}
+          {visibleMessages.length === 0 && !draft ? (
             <div className="empty-transcript">
               <p style={{ margin: "0 0 6px" }}>
                 <strong>The world is quiet.</strong>
@@ -281,10 +260,10 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
               <p style={{ margin: 0 }}>Type an action to begin the roleplay.</p>
             </div>
           ) : (
-            // One bubble per persisted message; id is the stable
+            // One bubble per visible persisted message; id is the stable
             // reconciliation key, so re-renders never lose scroll or animate
             // existing rows.
-            messages.map((message) => <MessageBubble key={message.id} message={message} />)
+            visibleMessages.map((message) => <MessageBubble key={message.id} message={message} />)
           )}
 
           {/* Live streaming block: rendered only while a turn is in flight
@@ -299,9 +278,6 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
               <div className="msg-body blink-caret">{draft}</div>
             </div>
           ) : null}
-
-          {/* Transient status line (tool activity) only during a live turn. */}
-          {streaming && activity ? <p className="faint">… {activity}</p> : null}
 
           {/* The last error shows inside the transcript so it is contextual,
               not a toast that could be missed. */}
@@ -318,9 +294,11 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
               state without a heavy spinner. */}
           {streaming ? (
             <div className="typing-line">
-              {/* The pulsing dot is the whole "writing" indicator. */}
+              {/* The pulsing dot is the whole "writing" indicator. Tool
+                  activity stays hidden, so the label is always the same
+                  quiet line. */}
               <span className="typing-dot" aria-hidden="true" />
-              <span>{activity ? activity : "The GM is writing…"}</span>
+              <span>The GM is writing…</span>
               {/* Abort path: the backend fires a follow-up event that finally
                   resets streaming, so this button only needs to request it. */}
               <Button variant="ghost" onClick={() => cancelTurn(campaignId)}>
