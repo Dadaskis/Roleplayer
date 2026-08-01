@@ -9,7 +9,7 @@ use roleplayer_core::errors::{AppError, Result};
 use roleplayer_core::eventbus::{AppEvent, EventBus};
 use roleplayer_core::game_command::{CommandContext, GameCommand};
 use roleplayer_core::llm::{
-    ChatMessage, CompletionRequest, ContentBlock, Role, ToolSchema,
+    ChatMessage, CompletionRequest, ContentBlock, MessageMode, Role, ToolSchema,
 };
 use roleplayer_core::storage::Storage;
 use roleplayer_core::{new_id, now_rfc3339};
@@ -42,6 +42,9 @@ pub struct MessageDto {
     // Typed content blocks; text for narration, tool calls/results for the
     // agentic loop — never raw provider-specific text (§5.5).
     pub content: Vec<ContentBlock>,
+    // For player rows: whether the message is dialogue (speech) or an action
+    // (narration). GM/tool rows always store Action and never read it.
+    pub mode: MessageMode,
     // The model that produced this row; None for user/tool rows.
     pub model: Option<String>,
     // Monotonic per-campaign sequence number; orders the transcript.
@@ -51,11 +54,12 @@ pub struct MessageDto {
 }
 
 impl MessageDto {
-    /// A plain text-only row (used for the user's typed action).
+    /// A plain text-only row (used for the user's typed action/speech).
     fn text(
         campaign_id: &str,
         role: Role,
         text: &str,
+        mode: MessageMode,
         turn_index: i64,
     ) -> MessageDto {
         MessageDto {
@@ -64,6 +68,8 @@ impl MessageDto {
             role,
             // A single text block — there is no tooling on a user's message.
             content: vec![ContentBlock::Text { text: text.to_string() }],
+            // The player's mode (action/speech) is the whole point of the row.
+            mode,
             // User-typed rows carry no model provenance.
             model: None,
             turn_index,
@@ -87,6 +93,8 @@ impl MessageDto {
             // Clone the full block list — the same message is pushed into the
             // running context below, so the DTO must own its copy.
             content: message.content.clone(),
+            // Mode is a player-only concept; GM rows store the default.
+            mode: MessageMode::Action,
             // GM rows carry the model name for UI provenance display.
             model: Some(model.to_string()),
             turn_index,
@@ -179,6 +187,7 @@ impl<S: Storage + 'static> TurnService<S> {
         &self,
         campaign_id: &str,
         text: &str,
+        mode: MessageMode,
     ) -> Result<PreparedTurn> {
         // Load the campaign first: the loop below needs it for the ruleset
         // and ownership checks, so fail fast if the id is bogus.
@@ -195,8 +204,13 @@ impl<S: Storage + 'static> TurnService<S> {
             repo::latest_turn_index(self.storage.as_ref(), campaign_id)? + 1;
         // The user's trimmed text becomes the first transcript row, so it is
         // persisted even if the provider call later fails.
-        let user_message =
-            MessageDto::text(campaign_id, Role::User, text.trim(), turn_index);
+        let user_message = MessageDto::text(
+            campaign_id,
+            Role::User,
+            text.trim(),
+            mode,
+            turn_index,
+        );
         repo::insert_message(self.storage.as_ref(), &user_message)?;
 
         // Clear any stale cancel flag from a previous turn.
@@ -457,24 +471,32 @@ impl<S: Storage + 'static> TurnService<S> {
 
         let system =
             self.build_system_message(&ruleset, &world_document, &characters)?;
+        // The player's persona name makes mode prefixes read naturally ("Elara
+        // says: ..."); before a persona exists (setup chat) fall back to "You".
+        let character_name = characters
+            .iter()
+            .find(|character| character.is_player)
+            .map(|character| character.name.as_str())
+            .unwrap_or("You");
         // Order matters: system, then history (oldest→newest), then the fresh
         // user action last so the model sees the current input most recently.
         let mut context = vec![system];
         for stored in history {
+            // The freshly persisted user row is pushed again explicitly at the
+            // end (below) so the current input is always the last message;
+            // skipping it here prevents the same line from appearing twice in
+            // the prompt with its mode prefix duplicated.
+            if stored.id == user_message.id {
+                continue;
+            }
             // Rebuild each stored row as a chat message; the content blocks
             // carry over as-is (already provider-agnostic).
-            context.push(ChatMessage {
-                role: stored.role,
-                content: stored.content,
-            });
+            context.push(to_chat_message(character_name, &stored));
         }
         // Append the fresh user action explicitly so the model sees the
         // current input as the last message — the most recently relevant
         // instruction, per the ordering contract above.
-        context.push(ChatMessage {
-            role: user_message.role,
-            content: user_message.content.clone(),
-        });
+        context.push(to_chat_message(character_name, user_message));
         Ok(context)
     }
 
@@ -532,6 +554,15 @@ impl<S: Storage + 'static> TurnService<S> {
         // the world document diverge from the story.
         sections.push(
             "\nRemember: narrative free text never changes the world. Only tool calls do."
+                .to_string(),
+        );
+
+        // Explain the two player input modes so the GM parses the prefixed
+        // history correctly: `says: "..."` is dialogue, `acts: ...` narration.
+        sections.push(
+            "\nPlayer lines are prefixed with their mode: '<name> says: \"...\"' \
+             is spoken dialogue (respond to it in character), '<name> acts: ...' \
+             is a narrated action (respond to the deed)."
                 .to_string(),
         );
 
@@ -637,6 +668,8 @@ impl<S: Storage + 'static> TurnService<S> {
                         id: new_id(),
                         campaign_id: campaign_id.to_string(),
                         role: Role::Tool,
+                        // Tool rows carry the default mode; mode is a player-only concept.
+                        mode: MessageMode::Action,
                         content: vec![ContentBlock::ToolResult {
                             id: id.clone(),
                             result: json!({ "ok": false, "error": "unknown tool" }),
@@ -700,6 +733,8 @@ impl<S: Storage + 'static> TurnService<S> {
                         id: new_id(),
                         campaign_id: campaign_id.to_string(),
                         role: Role::Tool,
+                        // Tool rows carry the default mode; mode is a player-only concept.
+                        mode: MessageMode::Action,
                         content: vec![ContentBlock::ToolResult {
                             id: id.clone(),
                             result,
@@ -723,6 +758,8 @@ impl<S: Storage + 'static> TurnService<S> {
                         id: new_id(),
                         campaign_id: campaign_id.to_string(),
                         role: Role::Tool,
+                        // Tool rows carry the default mode; mode is a player-only concept.
+                        mode: MessageMode::Action,
                         content: vec![ContentBlock::ToolResult {
                             id: id.clone(),
                             result: json!({ "ok": false, "error": error.to_string() }),
@@ -768,9 +805,111 @@ impl<S: Storage + 'static> TurnService<S> {
     }
 }
 
+/// Convert a stored transcript row into a provider chat message.
+///
+/// Player rows carry their action/speech `mode`; the mode is turned into a
+/// prefix here (at prompt-build time, never stored) so the GM knows whether
+/// the line is dialogue or narration. Other roles pass through unchanged.
+fn to_chat_message(character_name: &str, message: &MessageDto) -> ChatMessage {
+    // Mode is a player-only concept; only Role::User rows read it.
+    if message.role != Role::User {
+        // Assistant/tool/system rows keep their content block-for-block.
+        return ChatMessage {
+            role: message.role,
+            content: message.content.clone(),
+        };
+    }
+    // Concatenate the player's text blocks; user rows are prose-only, but
+    // joining keeps the helper total even if a future block type appears.
+    let text = message
+        .content
+        .iter()
+        .filter_map(ContentBlock::text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Speech is dialogue (quoted), action is narration (unquoted) — the two
+    // modes the composer offers map to these two shapes. The verb conjugates
+    // for the "You" fallback ("You say", not "You says").
+    let prefixed = match message.mode {
+        MessageMode::Speech if character_name == "You" => {
+            format!("You say: \"{text}\"")
+        }
+        MessageMode::Speech => format!("{character_name} says: \"{text}\""),
+        MessageMode::Action if character_name == "You" => {
+            format!("You act: {text}")
+        }
+        MessageMode::Action => format!("{character_name} acts: {text}"),
+    };
+    ChatMessage::text(Role::User, prefixed)
+}
+
 /// Convert a persisted tool-result row back into a provider chat message.
 fn tool_message_to_chat(message: &MessageDto) -> ChatMessage {
     // Only the role + content matter to the provider; the DTO's id, turn
     // index, and timestamps are transcript concerns, not prompt concerns.
     ChatMessage { role: Role::Tool, content: message.content.clone() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal user row; the mode is the only field each test varies.
+    fn user_row(text: &str, mode: MessageMode) -> MessageDto {
+        MessageDto {
+            id: new_id(),
+            campaign_id: "c1".to_string(),
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: text.to_string() }],
+            mode,
+            model: None,
+            turn_index: 1,
+            created_at: now_rfc3339(),
+        }
+    }
+
+    #[test]
+    fn speech_mode_quotes_the_line_for_the_gm() {
+        // Dialogue must be wrapped in quotes so the GM reads it as spoken words.
+        let chat = to_chat_message(
+            "Elara",
+            &user_row("I swear on my honor", MessageMode::Speech),
+        );
+        let text =
+            chat.content.iter().find_map(ContentBlock::text).expect("text");
+        assert_eq!(text, "Elara says: \"I swear on my honor\"");
+    }
+
+    #[test]
+    fn action_mode_narrates_the_deed() {
+        // Actions are narration, so the prefix reads as a deed, not a quote.
+        let chat = to_chat_message(
+            "Elara",
+            &user_row("draw my sword", MessageMode::Action),
+        );
+        let text =
+            chat.content.iter().find_map(ContentBlock::text).expect("text");
+        assert_eq!(text, "Elara acts: draw my sword");
+    }
+
+    #[test]
+    fn non_user_rows_pass_through_unchanged() {
+        // The GM's own rows must reach the provider exactly as stored — the
+        // mode prefix is a player-message concern only.
+        let assistant = MessageDto {
+            id: new_id(),
+            campaign_id: "c1".to_string(),
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "The door creaks.".to_string(),
+            }],
+            mode: MessageMode::Action,
+            model: Some("mock".to_string()),
+            turn_index: 1,
+            created_at: now_rfc3339(),
+        };
+        let chat = to_chat_message("Elara", &assistant);
+        assert_eq!(chat.role, Role::Assistant);
+        assert_eq!(chat.content[0].text(), Some("The door creaks."));
+    }
 }

@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use roleplayer_core::errors::ErrorDto;
+use roleplayer_core::llm::MessageMode;
 use roleplayer_core::storage::Database;
 use tauri::State;
 
@@ -19,14 +20,21 @@ pub fn send_turn(
     service: State<'_, SharedTurnService>,
     campaign_id: String,
     text: String,
+    // The player's input mode ("action" or "speech"); validated at the
+    // boundary so a hostile value can never reach storage (§5.10, §5.18).
+    mode: String,
 ) -> Result<i64, ErrorDto> {
+    // Parse the wire string; anything other than "speech" degrades to the
+    // action default, matching the tolerant parsers used elsewhere.
+    let mode = MessageMode::from_wire(&mode);
     // Clone the Arc so the spawned task can own the service independently of
     // the borrowed `State` guard, which only lives for this command call.
     let service = service.inner().clone();
     // Phase 1: validate + persist the user message synchronously, on this
     // thread (no runtime needed); errors reach the caller directly.
-    let prepared =
-        service.prepare_turn(&campaign_id, &text).map_err(ErrorDto::from)?;
+    let prepared = service
+        .prepare_turn(&campaign_id, &text, mode)
+        .map_err(ErrorDto::from)?;
     // Remember the index to return to the caller before execution starts.
     let turn_index = prepared.turn_index;
 

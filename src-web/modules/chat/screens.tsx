@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 
-import { onTurnEvent, type ContentBlock, type MessageDto } from "../../core/api/invoke"
+import { onTurnEvent, type ContentBlock, type MessageDto, type MessageMode } from "../../core/api/invoke"
 import { Button } from "../../core/ui/components"
 import { cancelTurn, listMessages, sendTurn } from "./api"
 import { useChatStore } from "./store"
@@ -68,12 +68,15 @@ function MessageBubble({ message }: { message: MessageDto }) {
 
   // The user's own message is a short action statement: right-aligned bubble.
   const isUser = message.role === "user"
+  // Speech (dialogue) bubbles get a distinct style so the player's spoken
+  // lines read differently from their narrated actions.
+  const isSpeech = isUser && message.mode === "speech"
   return (
     // `message-enter` animates arrival; the msg-* class sets the asymmetry.
-    <div className={`message-enter msg ${isUser ? "msg-user" : "msg-gm"}`}>
+    <div className={`message-enter msg ${isUser ? "msg-user" : "msg-gm"} ${isSpeech ? "msg-speech" : ""}`}>
       {/* Role label above the bubble: who is speaking, in the faint type.
           roleLabel maps engine roles to human-facing names (GM/You). */}
-      <span className="msg-label">{roleLabel(message.role)}</span>
+      <span className="msg-label">{isUser ? (isSpeech ? "You say" : "You") : roleLabel(message.role)}</span>
       {/* pre-wrap preserves line breaks from the GM without a <br> pass. */}
       {text ? <div className="msg-body">{text}</div> : null}
       {/* Tool chips render only when the message carried tool blocks. */}
@@ -95,6 +98,9 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
   const queryClient = useQueryClient()
   // Composer text; local state is fine — nothing else reads or writes it.
   const [input, setInput] = useState("")
+  // Which input mode the composer is in: an action (what the character does)
+  // or speech (what the character says). Defaults to action, the common case.
+  const [mode, setMode] = useState<MessageMode>("action")
   // The scroll container; used to jump to the newest message on updates.
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -245,7 +251,7 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
     // Drop any prior error so a fresh send doesn't show a stale failure.
     store.setError(campaignId, null)
     try {
-      await sendTurn(campaignId, text)
+      await sendTurn(campaignId, text, mode)
     } catch (reason) {
       // A rejected send (e.g. backend unavailable) must release the lock so
       // the composer doesn't stay frozen; the error shows in the transcript.
@@ -323,6 +329,32 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
             </div>
           ) : null}
           <div className="composer-row">
+            {/* The mode toggle: a quiet segmented control telling the GM whether
+                the next line is dialogue (speech) or narration (action). Hidden
+                while streaming — the GM is mid-turn, no input is expected. */}
+            <div className="mode-toggle" role="group" aria-label="Message mode">
+              {(
+                [
+                  { id: "action", label: "Action" },
+                  { id: "speech", label: "Speech" },
+                ] as const
+              ).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`mode-toggle-btn ${mode === item.id ? "mode-toggle-active" : ""}`}
+                  aria-pressed={mode === item.id}
+                  // Locked mid-turn, same as the Send button: the mode only
+                  // applies to the next line, which can't be sent while the
+                  // GM is still writing.
+                  disabled={streaming}
+                  // Selecting a mode never clears the typed draft.
+                  onClick={() => setMode(item.id)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
             {/* Controlled textarea; .grow stretches it to share the row with
                 the send button instead of wrapping onto a new line. The
                 placeholder sets the roleplay tone — this is an action prompt,
@@ -330,7 +362,7 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
             <textarea
               className="textarea grow"
               rows={2}
-              placeholder="Describe your action…"
+              placeholder={mode === "speech" ? "What does your character say…" : "Describe your action…"}
               value={input}
               onChange={(event) => setInput(event.target.value)}
               // Enter sends, Shift+Enter inserts a newline — the standard chat

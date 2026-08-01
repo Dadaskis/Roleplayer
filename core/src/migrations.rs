@@ -12,7 +12,7 @@ use rusqlite_migration::{Migrations, M};
 /// context (heap allocation). Called once at database open; appending a new
 /// migration is adding one entry at the END — never editing or reordering.
 pub fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(SCHEMA_V1)])
+    Migrations::new(vec![M::up(SCHEMA_V1), M::up(SCHEMA_V2)])
 }
 
 /// Version 1 — the initial schema.
@@ -143,8 +143,22 @@ CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
 END;
 "#;
 
+/// Version 2 — player message modes (action vs. speech).
+///
+/// `mode` tells the GM whether a player message is dialogue (`speech`) or
+/// narration (`action`). `NOT NULL DEFAULT 'action'` backfills every existing
+/// row as an action, and the `CHECK` rejects any other value at the DB
+/// boundary (§5.10 of AGENTS.md). The FTS5 index only covers
+/// `campaign_id/role/content`, so adding this column needs no trigger change.
+const SCHEMA_V2: &str = r#"
+ALTER TABLE messages ADD COLUMN mode TEXT NOT NULL DEFAULT 'action'
+    CHECK (mode IN ('action', 'speech'));
+"#;
+
 #[cfg(test)]
 mod tests {
+    use super::migrations;
+    use super::SCHEMA_V1;
     use crate::storage::{Database, Storage};
 
     #[test]
@@ -171,5 +185,49 @@ mod tests {
             .expect("query should work");
 
         assert_eq!(name.as_deref(), Some("Test Campaign"));
+    }
+
+    #[test]
+    fn v2_adds_message_mode_with_action_default() {
+        // Prove the v1 -> v2 upgrade for real: apply ONLY v1, write a row the
+        // way v1 shaped it (no `mode` column), then apply v2 and confirm the
+        // ALTER TABLE backfills that pre-existing row with 'action'.
+        use rusqlite_migration::{Migrations, M};
+
+        // A raw connection lets us apply migrations in two steps instead of
+        // running everything to latest in one shot.
+        let mut connection =
+            rusqlite::Connection::open_in_memory().expect("in-memory conn");
+        // Step 1: v1 only — this is the schema a pre-upgrade database has.
+        Migrations::new(vec![M::up(SCHEMA_V1)])
+            .to_latest(&mut connection)
+            .expect("v1 applies");
+        // Seed a campaign, then a message row exactly as v1 shaped it.
+        connection
+            .execute(
+                "INSERT INTO campaigns (id, name, description, created_at, updated_at)
+                 VALUES ('c1', 'Camp', '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("seed campaign");
+        connection
+            .execute(
+                "INSERT INTO messages (id, campaign_id, role, content, model, turn_index, created_at)
+                 VALUES ('m1', 'c1', 'user', '[]', NULL, 1, '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("seed v1 message");
+
+        // Step 2: the real upgrade path (v1 -> v2) over the existing rows.
+        migrations().to_latest(&mut connection).expect("v2 applies over v1");
+
+        // The DEFAULT must have backfilled the v1 row; a NULL here would mean
+        // the migration (not the test) is broken.
+        let mode: String = connection
+            .query_row("SELECT mode FROM messages WHERE id = 'm1'", [], |row| {
+                row.get(0)
+            })
+            .expect("mode column exists after v2");
+        assert_eq!(mode, "action");
     }
 }

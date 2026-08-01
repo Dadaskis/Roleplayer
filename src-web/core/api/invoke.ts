@@ -59,6 +59,10 @@ export function call<T>(command: string, args?: Record<string, unknown>): Promis
 // "assistant" is the GM; "tool" rows are engine-internal and rarely surfaced.
 export type Role = "system" | "user" | "assistant" | "tool"
 
+// How a player message should be read: dialogue (speech) or narration (action).
+// Mirrors the Rust MessageMode enum; "action" is the default for older rows.
+export type MessageMode = "action" | "speech"
+
 // Message content is a tagged union mirroring the Rust ContentBlock enum
 // (§5.5) — tool arguments/results are deliberately untyped here because each
 // tool defines its own payload shape.
@@ -78,6 +82,9 @@ export interface MessageDto {
   campaign_id: string
   role: Role
   content: ContentBlock[]
+  // Player rows: "action" (narration) or "speech" (dialogue); GM/tool rows
+  // always carry "action" and never read it.
+  mode: MessageMode
   // Model that produced the message; null for user/system/tool rows.
   model: string | null
   // Monotonic per-campaign counter that orders the persisted transcript.

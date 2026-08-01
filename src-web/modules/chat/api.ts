@@ -2,14 +2,14 @@
 
 // `call` is the only backend bridge; MessageDto is shared from core so the
 // transcript type is the same everywhere it is rendered.
-import { call, type MessageDto } from "../../core/api/invoke"
+import { call, type MessageDto, type MessageMode } from "../../core/api/invoke"
 
 // Returns the turn_index of the completed turn, so the caller can confirm the
 // turn landed and later reconcile the transcript via listMessages.
-export function sendTurn(campaignId: string, text: string): Promise<number> {
-  // The resolved number is the finished turn's index; the UI itself ignores
-  // it (events drive rendering), but it proves the turn actually landed.
-  return call<number>("send_turn", { campaignId, text })
+export function sendTurn(campaignId: string, text: string, mode: MessageMode): Promise<number> {
+  // The mode ("action" | "speech") rides alongside the text so the GM can tell
+  // dialogue from narration when it builds its context.
+  return call<number>("send_turn", { campaignId, text, mode })
 }
 
 // Aborts an in-flight turn on the backend; a turn_error/turn_complete event

@@ -47,6 +47,40 @@ impl Role {
     }
 }
 
+/// How a player message should be understood by the GM.
+///
+/// A `Speech` message is what the character *says* (dialogue); an `Action`
+/// message is what the character *does* (narration). The mode is message-level
+/// metadata stored on the transcript row and turned into a prompt prefix when
+/// the context is built — the stored text stays raw, so nothing is duplicated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageMode {
+    /// The character performs an action (default; the common case).
+    Action,
+    /// The character speaks a line of dialogue.
+    Speech,
+}
+
+impl MessageMode {
+    /// Stable wire name used in persistence and IPC.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MessageMode::Action => "action",
+            MessageMode::Speech => "speech",
+        }
+    }
+
+    /// Inverse of [`MessageMode::as_str`]; unknown strings fall back to
+    /// `Action` so pre-mode rows and malformed values degrade gracefully.
+    pub fn from_wire(value: &str) -> MessageMode {
+        match value {
+            "speech" => MessageMode::Speech,
+            _ => MessageMode::Action,
+        }
+    }
+}
+
 /// One unit of message content in the provider-agnostic shape.
 ///
 /// Tagged as `type: "text" | "tool_call" | "tool_result"` on the wire so the

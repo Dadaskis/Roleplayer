@@ -103,6 +103,10 @@ describe("App stage flow", () => {
     // The chat top bar shows the campaign name; findByText waits for the
     // separate get_campaign query to resolve (the lobby is unmounted now).
     expect(await screen.findByText("The Duskmoor Pact")).toBeInTheDocument()
+    // The Action/Speech mode toggle is part of the composer.
+    expect(screen.getByRole("group", { name: "Message mode" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Action" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Speech" })).toBeInTheDocument()
   })
 
   it("hides the world/data panels behind the debug drawer", async () => {

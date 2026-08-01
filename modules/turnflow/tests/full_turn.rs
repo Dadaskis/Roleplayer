@@ -69,7 +69,11 @@ async fn full_turn_with_mock_provider_completes() {
     // Send a turn that triggers the Mock's dice tool call. Preparation is
     // synchronous; execution is spawned here (tests run inside a tokio runtime).
     let prepared = turnflow
-        .prepare_turn(&campaign.id, "I swing my axe at the goblin — roll dice")
+        .prepare_turn(
+            &campaign.id,
+            "I swing my axe at the goblin — roll dice",
+            roleplayer_core::llm::MessageMode::Action,
+        )
         .expect("prepare turn");
     // Turn indices start at 1 for the first turn of a fresh campaign.
     assert_eq!(prepared.turn_index, 1, "first turn has index 1");

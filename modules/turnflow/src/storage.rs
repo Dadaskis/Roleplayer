@@ -19,18 +19,20 @@ pub fn insert_message<S: Storage + ?Sized>(
     let content = serde_json::to_string(&message.content).map_err(|error| {
         roleplayer_core::errors::AppError::Domain(error.to_string())
     })?;
-    // Placeholders ?1..?7 bind in column order; binding, never string-building,
+    // Placeholders ?1..?8 bind in column order; binding, never string-building,
     // keeps user data out of the SQL text (§5.16).
     storage
         .execute(
-            "INSERT INTO messages (id, campaign_id, role, content, model, turn_index, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO messages (id, campaign_id, role, content, mode, model, turn_index, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             &[
                 &message.id,
                 &message.campaign_id,
                 // The role enum travels as its wire string, matching map_message.
                 &message.role.as_str(),
                 &content,
+                // The mode travels as its wire string ("action"/"speech").
+                &message.mode.as_str(),
                 // Option<String> binds as NULL when no model name is recorded.
                 &message.model,
                 &message.turn_index,
@@ -68,7 +70,7 @@ pub fn list_messages<S: Storage + ?Sized>(
     storage.query_vec(
         // Oldest-first transcript window; the campaign filter and LIMIT are
         // both bound so no other campaign's rows can leak in.
-        "SELECT id, campaign_id, role, content, model, turn_index, created_at
+        "SELECT id, campaign_id, role, content, mode, model, turn_index, created_at
          FROM messages
          WHERE campaign_id = ?1
          ORDER BY created_at ASC
@@ -86,7 +88,7 @@ pub fn recent_messages<S: Storage + ?Sized>(
 ) -> Result<Vec<MessageDto>> {
     storage.query_vec(
         // Fetches the NEWEST `window` rows (DESC + LIMIT) for context building.
-        "SELECT id, campaign_id, role, content, model, turn_index, created_at
+        "SELECT id, campaign_id, role, content, mode, model, turn_index, created_at
          FROM messages
          WHERE campaign_id = ?1
          ORDER BY created_at DESC
@@ -112,7 +114,7 @@ pub fn list_messages_between<S: Storage + ?Sized>(
     storage.query_vec(
         // Inclusive range slice [from_turn, to_turn], oldest first — the exact
         // window memory summarization condenses into a Memory.
-        "SELECT id, campaign_id, role, content, model, turn_index, created_at
+        "SELECT id, campaign_id, role, content, mode, model, turn_index, created_at
          FROM messages
          WHERE campaign_id = ?1 AND turn_index >= ?2 AND turn_index <= ?3
          ORDER BY created_at ASC",
@@ -135,6 +137,11 @@ fn map_message(row: &Row<'_>) -> rusqlite::Result<MessageDto> {
         // Content is JSON text; a malformed block list degrades to an empty
         // transcript entry rather than failing the whole read (§5.10).
         content: serde_json::from_str(&content).unwrap_or_default(),
+        // The mode wire string is reversed by the shared parser; unknown
+        // values (or pre-v2 rows, defaulted by the DB) degrade to Action.
+        mode: roleplayer_core::llm::MessageMode::from_wire(
+            &row.get::<_, String>("mode")?,
+        ),
         model: row.get("model")?,
         turn_index: row.get("turn_index")?,
         created_at: row.get("created_at")?,
@@ -172,6 +179,8 @@ mod tests {
             role,
             // A single text block; enough for transcript round-trip tests.
             content: vec![ContentBlock::Text { text: text.to_string() }],
+            // Default mode; the round-trip test asserts it survives the write.
+            mode: roleplayer_core::llm::MessageMode::Action,
             model: None,
             turn_index: turn,
             created_at: now_rfc3339(),
@@ -203,5 +212,26 @@ mod tests {
         assert_eq!(recent.len(), 2);
         // Newest last (oldest-first ordering preserved).
         assert_eq!(recent[1].content[0].text(), Some("again"));
+    }
+
+    #[test]
+    fn mode_round_trips_on_the_message_row() {
+        let storage = Database::open_in_memory().expect("in-memory db");
+        seed_campaign(&storage, "camp-1");
+
+        // A speech row must survive insert -> read with its mode intact.
+        let mut spoken = message("camp-1", Role::User, "hello", 1);
+        spoken.mode = roleplayer_core::llm::MessageMode::Speech;
+        insert_message(&storage, &spoken).expect("insert");
+
+        let read = list_messages(&storage, "camp-1", 10)
+            .expect("list")
+            .pop()
+            .expect("one row");
+        assert_eq!(
+            read.mode,
+            roleplayer_core::llm::MessageMode::Speech,
+            "speech mode must round-trip through the row"
+        );
     }
 }

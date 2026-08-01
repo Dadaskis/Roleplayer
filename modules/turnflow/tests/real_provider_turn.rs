@@ -86,6 +86,7 @@ async fn real_opencode_go_turn_completes() {
         .prepare_turn(
             &campaign.id,
             "A tavern door creaks open. I step inside and look around — describe the scene and set a fact about the room with your tools if it fits.",
+            roleplayer_core::llm::MessageMode::Action,
         )
         .expect("prepare turn");
     let runner = turnflow.clone();

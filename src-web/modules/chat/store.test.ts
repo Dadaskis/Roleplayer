@@ -18,6 +18,8 @@ function userMessage(id: string, text: string): MessageDto {
     campaign_id: "c1",
     role: "user",
     content: [{ type: "text", text }],
+    // Default mode; the store treats all modes identically.
+    mode: "action",
     model: null,
     turn_index: 1,
     // Any fixed timestamp is fine; the store never reads it.
