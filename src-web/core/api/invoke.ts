@@ -53,6 +53,13 @@ export function call<T>(command: string, args?: Record<string, unknown>): Promis
   return invoke<T>(command, args)
 }
 
+/** Open (or focus) the pop-out debug window for a campaign. */
+export function openDebugWindow(campaignId: string): Promise<void> {
+  // Shell-level windowing command; lives in the app crate, not a feature
+  // module, so it is wrapped here alongside the shared invoke bridge.
+  return call<void>("open_debug_window", { campaignId })
+}
+
 // ---------- shared domain shapes ----------
 
 // Speaker of a message; mirrors the Rust Role enum used by the turnflow.

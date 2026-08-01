@@ -172,11 +172,6 @@ a:hover {
   outline-offset: 2px;
 }
 
-.icon-btn-active {
-  /* The Debug toggle's "on" state: accent color marks the mode is live. */
-  color: var(--accent-strong);
-}
-
 /* ---------- home stage (campaign select) ---------- */
 
 .home {
@@ -512,113 +507,6 @@ a:hover {
   }
 }
 
-/* ---------- debug drawer ---------- */
-
-.drawer-backdrop {
-  /* Dims the chat behind the open drawer; clicking it closes the drawer.
-   * The accent never appears here — this layer is pure dismissal affordance. */
-  position: fixed;
-  inset: 0;
-  background: rgba(5, 7, 10, 0.5);
-  z-index: 100;
-  animation: fade-in 0.15s ease;
-}
-
-.drawer {
-  /* Right slide-in panel: overlays the chat (which keeps its geometry),
-   * never pushes it aside — the whole point of a drawer over a panel. */
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 400px;
-  max-width: 100%;
-  z-index: 101;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-elevated);
-  border-left: 1px solid var(--border);
-  box-shadow: -16px 0 40px rgba(0, 0, 0, 0.45);
-  animation: drawer-in 0.18s ease;
-}
-
-.drawer-header {
-  /* Drawer title row: "Debug" + the close button, fixed so the body scrolls
-   * independently below. */
-  height: 48px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 12px 0 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-.drawer-title {
-  /* "Debug" — labeled honestly: this is raw developer-facing data, not a
-   * feature the player needs. */
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.8px;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.drawer-tabs {
-  /* Secondary tab strip inside the drawer: demoted from the old workspace
-   * tab bar to a quiet selector that doesn't compete with the chat. */
-  display: flex;
-  gap: 4px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.drawer-tab {
-  /* Small ghost pill; the active tab gets the accent. */
-  padding: 5px 12px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
-  transition:
-    color 0.15s ease,
-    border-color 0.15s ease,
-    background 0.15s ease;
-}
-
-.drawer-tab:hover {
-  color: var(--text);
-  background: var(--bg-elevated-2);
-}
-
-.drawer-tab-active {
-  color: var(--accent-strong);
-  border-color: rgba(165, 180, 252, 0.4);
-  background: rgba(165, 180, 252, 0.08);
-}
-
-.drawer-body {
-  /* The panel content zone; scrolls while the header/tabs stay put. */
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 16px;
-}
-
-/* Panels were built for full width; inside the 400px drawer they need a
- * little more give — smaller card padding and wrapping rows. */
-.drawer .card {
-  padding: 14px;
-}
-
-.drawer .row {
-  flex-wrap: wrap;
-}
-
 /* ---------- components ---------- */
 .btn {
   /* inline-flex centers the label (and any icon) within the button box. */
@@ -872,25 +760,6 @@ a:hover {
   50% {
     /* Caret blinks off at the halfway point and back on at the end. */
     opacity: 0;
-  }
-}
-
-@keyframes drawer-in {
-  from {
-    /* Start fully off the right edge so the drawer visibly slides in. */
-    transform: translateX(100%);
-  }
-  to {
-    transform: translateX(0);
-  }
-}
-
-@keyframes fade-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
   }
 }
 

@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use roleplayer_campaigns::service::CampaignService;
 use roleplayer_characters::service::CharacterService;
+use roleplayer_core::errors::{AppError, ErrorDto};
 use roleplayer_core::eventbus::EventBus;
 use roleplayer_core::storage::Database;
 use roleplayer_memories::service::MemoryService;
@@ -19,7 +20,7 @@ use roleplayer_rulesets::service::RulesetService;
 use roleplayer_search::service::SearchService;
 use roleplayer_turnflow::service::TurnService;
 use roleplayer_world_state::service::WorldStateService;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, State};
 
 /// Everything the commands and the app need, wired once at startup.
 struct AppState {
@@ -230,6 +231,53 @@ fn rotate_logs(logs_dir: &std::path::Path) {
     tracing::info!("rotated logs: current file exceeded {LOG_MAX_BYTES} bytes");
 }
 
+/// Command: open (or focus) the debug window for a campaign.
+///
+/// The debug data lives in a real second window, not an in-app panel, so the
+/// world/memory/audit panels get room to breathe without shrinking the chat.
+#[tauri::command]
+fn open_debug_window(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    campaign_id: String,
+) -> Result<(), ErrorDto> {
+    // Only open a window for a campaign that actually exists; a bogus id
+    // must not spawn a window pointing at nothing.
+    if state.campaigns.get(&campaign_id).map_err(ErrorDto::from)?.is_none() {
+        return Err(ErrorDto::from(AppError::Domain(format!(
+            "campaign not found: {campaign_id}"
+        ))));
+    }
+
+    // One window per campaign; a repeated click focuses the existing one
+    // instead of panicking on a duplicate window label. A window that is
+    // still mid-destruction may also be found here — focusing it is harmless
+    // (the set_focus error is swallowed) and the next click opens a fresh one.
+    let label = format!("debug-{campaign_id}");
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    // WebviewUrl::App resolves to the dev server in dev and the bundled dist
+    // in release — the same resolution the main window uses, so the hash
+    // route (`#/debug/<id>`) is picked up by main.tsx in both environments.
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        &label,
+        tauri::WebviewUrl::App(
+            format!("index.html#/debug/{campaign_id}").into(),
+        ),
+    )
+    .title("Roleplayer — Debug")
+    // A wide window: the whole point of a pop-out is room for the panels.
+    .inner_size(1000.0, 720.0)
+    .build()
+    // Window-creation failures (rare: OS limits) are IPC errors, not panics.
+    .map_err(|error| ErrorDto::from(AppError::Ipc(error.to_string())))?;
+    Ok(())
+}
+
 /// Forward every event bus message to the webview as `turn-event`.
 fn forward_events(app: &tauri::App, bus: EventBus) {
     let handle = app.handle().clone();
@@ -306,6 +354,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            open_debug_window,
             roleplayer_campaigns::commands::list_campaigns,
             roleplayer_campaigns::commands::create_campaign,
             roleplayer_campaigns::commands::get_campaign,

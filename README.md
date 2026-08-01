@@ -40,8 +40,9 @@ data, the database is the truth.
 - **Memories** and **full-text search** (SQLite FTS5) over the history.
 - **A chat-first UI**: pick a campaign on the lobby, then play inside a
   full-window chat (GM narration reads as full-width prose, your actions as
-  right-aligned bubbles). World state, memories, and the audit trail stay out
-  of the way behind a "Debug" drawer toggle.
+  right-aligned bubbles, dialogue as speech). World state, memories, and the
+  audit trail stay out of the way behind a "Debug" button that opens them in
+  a separate pop-out window.
 - **A full app UI** (React) plus a typed IPC contract in one place.
 - Secrets stay in the OS keyring; keys are never stored in the DB.
 

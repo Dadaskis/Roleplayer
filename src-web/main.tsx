@@ -9,6 +9,8 @@ import ReactDOM from "react-dom/client"
 
 // The app shell: navigation + top-level view composition.
 import { App } from "./App"
+// The pop-out debug window root, mounted only on the `#/debug/<id>` route.
+import { DebugRoot } from "./debug"
 // Importing the stylesheet for its side effect — every component below
 // references these classes, so they must be loaded before first paint.
 import "./core/ui/theme.css"
@@ -37,15 +39,22 @@ if (!root) {
   throw new Error("missing #root element")
 }
 
+// The debug window loads `index.html#/debug/<id>`; a matching hash mounts the
+// pop-out debug root instead of the main app. The id is URL-encoded
+// defensively in case a future id format needs it.
+const debugMatch = window.location.hash.match(/^#\/debug\/(.+)$/)
+const rootView = debugMatch ? (
+  <DebugRoot campaignId={decodeURIComponent(debugMatch[1])} />
+) : (
+  <App />
+)
+
 // StrictMode double-invokes effects in dev; the chat screen's event
 // subscription must survive that mount → unmount → mount cycle.
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
     {/* Provide the shared cache down the tree so every screen's useQuery
         calls resolve against the same store (retries/staleTime above). */}
-    <QueryClientProvider client={queryClient}>
-      {/* Mount the shell; all top-level navigation happens inside App. */}
-      <App />
-    </QueryClientProvider>
+    <QueryClientProvider client={queryClient}>{rootView}</QueryClientProvider>
   </React.StrictMode>,
 )

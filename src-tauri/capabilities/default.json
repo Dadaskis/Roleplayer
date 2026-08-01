@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the main window: core invoke + events.",
-  "windows": ["main"],
-  "permissions": ["core:default", "core:event:default"]
+  "description": "Default capability for the main window and every debug window: core invoke + events, plus explicit window close (needed by the debug window's × button; core:window:default does not include allow-close).",
+  "windows": ["main", "debug-*"],
+  "permissions": ["core:default", "core:event:default", "core:window:allow-close"]
 }

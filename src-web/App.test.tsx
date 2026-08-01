@@ -1,5 +1,5 @@
 // App shell render smoke test: verifies the stage-based flow works end to end
-// in jsdom — lobby → chat → debug drawer → back — without a window (§5.11).
+// in jsdom — lobby → chat → debug pop-out window → back — without a window (§5.11).
 //
 // The whole UI renders here, so this catches layout/JSX/runtime errors that
 // store tests (pure logic) can't. The Rust backend is mocked at the invoke
@@ -147,25 +147,24 @@ describe("App stage flow", () => {
     expect(screen.getByRole("button", { name: "Speech" })).toBeInTheDocument()
   })
 
-  it("hides the world/data panels behind the debug drawer", async () => {
+  it("opens the debug pop-out window from the top bar", async () => {
     renderApp()
     // Open the campaign so the chat stage (and its top bar) is visible.
     fireEvent.click(await screen.findByText("The Duskmoor Pact"))
     await screen.findByPlaceholderText("Describe your action…")
 
-    // The debug panels must NOT be visible before the toggle is pressed.
+    // The world/data panels must NOT be visible in the chat DOM before the
+    // button is pressed (they live in the separate debug window).
     expect(screen.queryByText("World state (0)")).not.toBeInTheDocument()
+    // No drawer overlay exists anymore — the debug window replaced it.
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
 
-    // The top-bar Debug toggle opens the drawer with its section tabs.
-    fireEvent.click(screen.getByLabelText("Toggle debug panel"))
-    expect(await screen.findByRole("dialog", { name: "Debug panel" })).toBeInTheDocument()
-    // The drawer's own heading and its secondary tabs render inside.
-    expect(screen.getByText("Debug")).toBeInTheDocument()
-    expect(screen.getByRole("tab", { name: "World" })).toBeInTheDocument()
-
-    // Esc dismisses the drawer (standard overlay behavior, shell-handled).
-    fireEvent.keyDown(window, { key: "Escape" })
-    expect(screen.queryByRole("dialog", { name: "Debug panel" })).not.toBeInTheDocument()
+    // Clicking the Debug button asks the backend to open the pop-out window
+    // for this campaign.
+    fireEvent.click(screen.getByLabelText("Open debug window"))
+    expect(invokeMock).toHaveBeenCalledWith("open_debug_window", { campaignId: "c1" })
+    // No overlay appears in this window; the chat stays as it was.
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
   it("returns from the chat to the lobby via the back button", async () => {
