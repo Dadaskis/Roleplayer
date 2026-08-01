@@ -1,7 +1,9 @@
 /* Roleplayer design tokens + bloom dark theme (§4.5 of PLAN.md).
  *
  * Palette is neutral zinc dark mode; the single accent is a soft indigo/violet
- * whose glow lands on *targets* (focus, hover, active), never on body text.
+ * whose glow lands ONLY on targets (focus, hover, active, primary actions,
+ * the GM narration stripe) — never on body text or resting surfaces. Withdraw
+ * the accent from decoration so its rare appearances carry meaning.
  * All motion honors prefers-reduced-motion.
  */
 /* All tokens hang off :root so they inherit into every component and a future
@@ -35,8 +37,8 @@
   --success: #34d399;
   --warning: #fbbf24;
   /* Two radii: default card corners and the tighter control corner. */
-  --radius: 10px;
-  --radius-sm: 6px;
+  --radius: 12px;
+  --radius-sm: 8px;
   /* Mono stack for code-ish surfaces (GM tool output, logs) with fallbacks. */
   --font-mono: "Fira Code", "JetBrains Mono", Consolas, monospace;
 
@@ -55,7 +57,7 @@
 html,
 body,
 #root {
-  /* The app-shell relies on a full-height flex chain down through #root;
+  /* The shell relies on a full-height flex chain down through #root;
    * margin: 0 kills the browser's default 8px body margin that would
    * otherwise push the shell off-screen. */
   height: 100%;
@@ -97,64 +99,502 @@ a:hover {
   background: rgba(165, 180, 252, 0.3);
 }
 
-/* ---------- layout ---------- */
-.app-shell {
-  display: flex;
-  height: 100%;
-}
+/* ---------- app shell + stage layout ---------- */
 
-.sidebar {
-  /* Frosted nav panel: translucent fill + backdrop blur let the body bloom
-   * show through while keeping the list readable over scrolling content. */
-  width: 280px;
-  /* Fixed width on a flex row: never shrink, or long titles would crush it. */
-  flex-shrink: 0;
-  background: rgba(18, 21, 28, 0.85);
-  backdrop-filter: blur(12px);
-  /* The hairline separator frames the nav without a hard visual cut. */
-  border-right: 1px solid var(--border);
+/* The shell is a single column: a top bar on top, the current stage fills
+ * everything below. Each "stage" is one full-screen scene (see App.tsx). */
+.stage {
+  /* The stage is the direct child of #root (height: 100% above), so it needs
+   * an explicit height rather than flex-grow — #root is not a flex parent. */
+  height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 16px;
-  gap: 8px;
-  /* Many campaigns: the nav scrolls internally, the main pane stays put. */
-  overflow-y: auto;
 }
 
-.sidebar-title {
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  margin: 0 0 12px 0;
-  /* Title is the brand: bright accent with a soft glow, never a button. */
+/* ---------- top bar (chat stage header) ---------- */
+
+.topbar {
+  /* Fixed 48px structural bar: identity on the left, actions on the right.
+   * The accent does NOT live here — the bar is structural, not actionable. */
+  height: 48px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* Slight frost + a hairline bottom edge separate the bar from content
+   * below without a hard cut. */
+  padding: 0 12px;
+  background: rgba(18, 21, 28, 0.6);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-title {
+  /* Campaign identity: 14px, semibold, slightly tracked — a label, not a
+   * hero heading, so it stays subordinate to the story itself. */
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.icon-btn {
+  /* Compact icon button: no background until hover, so the top bar stays
+   * quiet and the two icon actions don't compete with the chat. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.icon-btn:hover {
+  /* Hover gives the ghost its surface and edge so it reads as interactive. */
+  background: var(--bg-elevated-2);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.icon-btn:focus-visible {
+  /* Focus uses the accent ring — the one place the top bar may show the
+   * accent, because focus indication is non-negotiable. */
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.icon-btn-active {
+  /* The Debug toggle's "on" state: accent color marks the mode is live. */
   color: var(--accent-strong);
-  text-shadow: 0 0 18px var(--accent-glow);
 }
 
-.sidebar-section {
-  /* Tiny uppercase label groups nav items (e.g. the "Active" heading). */
+/* ---------- home stage (campaign select) ---------- */
+
+.home {
+  /* Centered lobby: the whole screen scrolls, content is capped at a reading
+   * measure so wide windows don't stretch rows edge to edge. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+}
+
+.home-inner {
+  /* 720px measure: wide enough for a name + premise, narrow enough to read
+   * as a focused lobby rather than a dashboard. */
+  width: 100%;
+  max-width: 720px;
+  padding: 56px 24px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+.home-header {
+  /* Title block left, the Settings gear right — the lobby's only chrome. */
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.home-title {
+  /* The brand heading: bright accent with a soft glow, once per screen. */
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  margin: 0;
+  color: var(--accent-strong);
+  text-shadow: 0 0 24px var(--accent-glow);
+}
+
+.home-subtitle {
+  /* One line of guidance under the title; muted so it never outshines the
+   * campaign rows below. */
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.home-section {
+  /* Section labels ("Your roleplays") group the lobby into quiet chunks. */
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1.2px;
   color: var(--text-faint);
-  margin: 12px 0 4px 0;
+  margin: 0;
 }
 
-.main {
+.campaign-row {
+  /* One lobby row per campaign: a full-width clickable card. The whole row
+   * is a <button> so the open action needs no separate target. */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  /* The accent appears only on hover/open-target — this is the "select"
+   * affordance, so it earns the glow. */
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+
+.campaign-row:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+.campaign-row:active {
+  transform: scale(0.99);
+}
+
+.campaign-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.campaign-row-open {
+  /* The clickable open target inside a row card. A button inside a button is
+   * invalid HTML, so the row is a div and this inner button stretches to
+   * carry the "open" click; the Delete button sits beside it. */
   flex: 1;
-  /* min-width: 0 lets the flex item shrink below its content width, which is
-   * required for the inner scroll area to work instead of forcing overflow. */
   min-width: 0;
+  text-align: left;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.campaign-row-open:focus-visible {
+  /* Keyboard users land on this inner button, so it gets the focus ring
+   * even though the decorative hover lives on the wrapping row. */
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
+}
+
+.campaign-row-name {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.campaign-row-meta {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+/* ---------- chat stage: transcript ---------- */
+
+.transcript {
+  /* Scrollable middle zone: the composer below stays pinned while prose
+   * scrolls freely here. The accent-free surface keeps focus on the story. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.transcript-inner {
+  /* Centered column capped at a comfortable prose measure — long GM narration
+   * needs a narrower measure than a generic chat's full-width log. */
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 28px 16px 20px;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* 18px rhythm between messages: enough to separate speakers, small enough
+   * to keep the story flowing. */
+  gap: 18px;
 }
 
-.main-scroll {
+.empty-transcript {
+  /* Quiet empty state: margin auto centers it in the remaining scroll space,
+   * so a fresh campaign reads as "the world is waiting" not "no data". */
+  margin: auto;
+  text-align: center;
+  color: var(--text-muted);
+  max-width: 420px;
+}
+
+.empty-transcript strong {
+  /* The campaign name leads the empty state; prose follows in muted type. */
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Message asymmetry — the core "this is roleplay, not Slack" decision:
+ * - GM narration is FULL-WIDTH prose with a 2px accent stripe on the left,
+ *   read like a book. A bubble around 200 words of narration looks absurd.
+ * - The user's action is a CONTAINED right-aligned bubble (short statement).
+ * - System lines are centered, muted, and tiny — clearly meta. */
+
+.msg {
+  /* Shared message column: role label above, body below. */
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.msg-gm {
+  /* GM narration: full width with the accent stripe, no bubble. */
+  border-left: 2px solid var(--accent);
+  padding-left: 16px;
+}
+
+.msg-user {
+  /* The user's action hugs the right and is capped at 70% width so short
+   * actions don't stretch; the label and body align to the right edge. */
+  align-self: flex-end;
+  max-width: 70%;
+  align-items: flex-end;
+}
+
+.msg-system {
+  /* Meta lines (rare): centered, tiny, muted — visually subordinate. */
+  align-self: center;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.msg-label {
+  /* Role name ("GM" / "You") above each message, tiny and faint. */
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.msg-body {
+  /* Shared prose styling: pre-wrap preserves GM paragraph breaks; the GM's
+   * comfortable line-height is what makes long narration readable. */
+  white-space: pre-wrap;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.msg-user .msg-body {
+  /* The user bubble: a slightly-lifted surface with its own radius, NOT the
+   * accent tint — a quiet container for a short action. */
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border);
+  border-radius: 14px 14px 4px 14px;
+  padding: 10px 14px;
+}
+
+.msg-tools {
+  /* Tool chips row under a message; wraps when the GM called many tools. */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tool-chip {
+  /* Tool activity as a small mono chip — an annotation, not a message. */
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-elevated-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+/* ---------- chat stage: composer ---------- */
+
+.composer-dock {
+  /* Pinned bottom strip: solid surface (not frosted — frosted inputs feel
+   * unreliable), with a hairline separating it from the transcript. */
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+.composer {
+  /* Centered to the same 720px measure as the transcript so input and story
+   * share one column; wide composers feel like email, not chat. */
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 12px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.composer .textarea {
+  /* The input is the composer's hero: rounded, roomy, no glow at rest —
+   * the accent border+glow appear ONLY on focus (see .textarea:focus). */
+  border-radius: 14px;
+  padding: 12px 14px;
+  min-height: 44px;
+  resize: none;
+}
+
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.typing-line {
+  /* Streaming indicator row: a pulsing dot + label + Stop. Replaces the
+   * input while the GM is writing so focus stays on the live state. */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.typing-dot {
+  /* The pulsing accent dot: a whisper of motion instead of a big spinner —
+   * big spinners read as "loading", this reads as "writing". */
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  /* Soft breathing between 30% and full opacity to suggest active writing. */
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ---------- debug drawer ---------- */
+
+.drawer-backdrop {
+  /* Dims the chat behind the open drawer; clicking it closes the drawer.
+   * The accent never appears here — this layer is pure dismissal affordance. */
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 7, 10, 0.5);
+  z-index: 100;
+  animation: fade-in 0.15s ease;
+}
+
+.drawer {
+  /* Right slide-in panel: overlays the chat (which keeps its geometry),
+   * never pushes it aside — the whole point of a drawer over a panel. */
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 400px;
+  max-width: 100%;
+  z-index: 101;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border-left: 1px solid var(--border);
+  box-shadow: -16px 0 40px rgba(0, 0, 0, 0.45);
+  animation: drawer-in 0.18s ease;
+}
+
+.drawer-header {
+  /* Drawer title row: "Debug" + the close button, fixed so the body scrolls
+   * independently below. */
+  height: 48px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer-title {
+  /* "Debug" — labeled honestly: this is raw developer-facing data, not a
+   * feature the player needs. */
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.drawer-tabs {
+  /* Secondary tab strip inside the drawer: demoted from the old workspace
+   * tab bar to a quiet selector that doesn't compete with the chat. */
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.drawer-tab {
+  /* Small ghost pill; the active tab gets the accent. */
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.drawer-tab:hover {
+  color: var(--text);
+  background: var(--bg-elevated-2);
+}
+
+.drawer-tab-active {
+  color: var(--accent-strong);
+  border-color: rgba(165, 180, 252, 0.4);
+  background: rgba(165, 180, 252, 0.08);
+}
+
+.drawer-body {
+  /* The panel content zone; scrolls while the header/tabs stay put. */
   flex: 1;
-  /* Scrolling happens here (not on body), keeping the sidebar fixed. */
+  min-height: 0;
   overflow-y: auto;
-  padding: 24px;
+  padding: 16px;
+}
+
+/* Panels were built for full width; inside the 400px drawer they need a
+ * little more give — smaller card padding and wrapping rows. */
+.drawer .card {
+  padding: 14px;
+}
+
+.drawer .row {
+  flex-wrap: wrap;
 }
 
 /* ---------- components ---------- */
@@ -347,6 +787,17 @@ a:hover {
   font-size: 12px;
 }
 
+/* The title style that module screens use for their own headings; kept under
+ * the old name so settings/campaign headings share the brand treatment. */
+.sidebar-title {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  margin: 0 0 12px 0;
+  color: var(--accent-strong);
+  text-shadow: 0 0 18px var(--accent-glow);
+}
+
 /* ---------- spinner + animations ---------- */
 .spinner {
   width: 16px;
@@ -399,6 +850,25 @@ a:hover {
   50% {
     /* Caret blinks off at the halfway point and back on at the end. */
     opacity: 0;
+  }
+}
+
+@keyframes drawer-in {
+  from {
+    /* Start fully off the right edge so the drawer visibly slides in. */
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 

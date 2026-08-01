@@ -1,10 +1,15 @@
 // Chat screen: streaming transcript + composer, driven by turn events.
+//
+// Layout: a centered transcript column (720px measure) with ASYMMETRIC bubbles
+// — the GM's narration is full-width prose with a left accent stripe (read
+// like a book), the user's action is a contained right-aligned bubble. The
+// composer dock below shares the same measure.
 
 import { useEffect, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 
 import { onTurnEvent, type ContentBlock, type MessageDto } from "../../core/api/invoke"
-import { Button, Spinner } from "../../core/ui/components"
+import { Button } from "../../core/ui/components"
 import { cancelTurn, listMessages, sendTurn } from "./api"
 import { useChatStore } from "./store"
 
@@ -27,8 +32,10 @@ function roleLabel(role: MessageDto["role"]): string {
   }
 }
 
-// Render one content block: tool calls/results surface as small badges rather
-// than prose so the transcript shows *what the GM did*, not raw payloads.
+// Render one content block: tool calls/results surface as small mono chips
+// rather than prose so the transcript shows *what the GM did* — and tool
+// activity annotates the narration instead of interrupting it as a fake
+// message.
 function BlockView({ block }: { block: ContentBlock }) {
   // Discriminate on the `type` tag — each variant renders differently.
   switch (block.type) {
@@ -36,62 +43,49 @@ function BlockView({ block }: { block: ContentBlock }) {
       // Prose renders verbatim; it is the bubble's main reading content.
       return <>{block.text}</>
     case "tool_call":
-      // A called tool becomes a compact accent badge naming the tool; the
+      // A called tool becomes a compact mono chip naming the tool; the
       // arguments stay hidden (raw JSON would bury the human narrative).
-      return (
-        <span className="badge badge-accent">
-          ⚙ {block.tool}
-        </span>
-      )
+      return <span className="tool-chip">⚙ {block.tool}</span>
     case "tool_result":
       // Results collapse to a neutral "done" marker — outcome detail is not
       // something the player needs in the main transcript.
-      return <span className="badge">done</span>
+      return <span className="tool-chip">✓ done</span>
   }
 }
 
 function MessageBubble({ message }: { message: MessageDto }) {
-  const isUser = message.role === "user"
-  // Messages are typed ContentBlocks; pull the prose blocks out for the main
-  // bubble and detect tool activity to render the badge row below.
-  // Filter then map: discard non-text blocks, concatenate remaining prose.
+  // Pull the prose blocks out for the main body and detect tool activity to
+  // render the chip row below. Filter then map: concatenate the text blocks.
   const text = message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")
   // some() is a short-circuiting check — stops at the first tool block.
   const hasTools = message.content.some((block) => block.type === "tool_call" || block.type === "tool_result")
 
+  // System lines are meta (session notes, rare) and get their own quiet row:
+  // centered, tiny, no bubble, no label — clearly not part of the story.
+  if (message.role === "system") {
+    return <div className="msg-system">{text}</div>
+  }
+
+  // The user's own message is a short action statement: right-aligned bubble.
+  const isUser = message.role === "user"
   return (
-    // Alignment flips by speaker: user bubbles hug the right, GM the left.
-    <div className={`message-enter col`} style={{ alignItems: isUser ? "flex-end" : "flex-start", gap: 4 }}>
-      {/* Role label above the bubble: who is speaking in the faint type. */}
-      <span className="faint">{roleLabel(message.role)}</span>
-      {/* Tint the user's bubbles so the two voices read at a glance; the
-          alpha is low enough to keep text legible on the dark theme. */}
-      <div
-        className="card"
-        style={{
-          // Cap bubble width so long messages wrap instead of stretching to
-          // the full pane width edge to edge.
-          maxWidth: "80%",
-          // User tint only: GM bubbles keep the default translucent card.
-          background: isUser ? "rgba(165,180,252,0.12)" : undefined,
-          borderColor: isUser ? "rgba(165,180,252,0.3)" : undefined,
-        }}
-      >
-        {/* pre-wrap preserves line breaks from the GM without a <br> pass. */}
-        {text ? <div style={{ whiteSpace: "pre-wrap" }}>{text}</div> : null}
-        {/* Tool badges render only when the message carried tool blocks. */}
-        {hasTools ? (
-          // marginTop only when prose already exists above the badge row;
-          // flexWrap lets many tool badges wrap onto later lines.
-          <div className="row" style={{ marginTop: text ? 8 : 0, flexWrap: "wrap" }}>
-            {/* Index as key is safe here: blocks are immutable per message
-                and never reorder, so there is no reconciliation churn. */}
-            {message.content.map((block, index) => (
-              <BlockView key={index} block={block} />
-            ))}
-          </div>
-        ) : null}
-      </div>
+    // `message-enter` animates arrival; the msg-* class sets the asymmetry.
+    <div className={`message-enter msg ${isUser ? "msg-user" : "msg-gm"}`}>
+      {/* Role label above the bubble: who is speaking, in the faint type.
+          roleLabel maps engine roles to human-facing names (GM/You). */}
+      <span className="msg-label">{roleLabel(message.role)}</span>
+      {/* pre-wrap preserves line breaks from the GM without a <br> pass. */}
+      {text ? <div className="msg-body">{text}</div> : null}
+      {/* Tool chips render only when the message carried tool blocks. */}
+      {hasTools ? (
+        // One chip per block, wrapped; blocks are immutable per message and
+        // never reorder, so index keys cannot cause reconciliation churn.
+        <div className="msg-tools">
+          {message.content.map((block, index) => (
+            <BlockView key={index} block={block} />
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -161,7 +155,8 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
       switch (event.type) {
         case "turn_delta":
           // Streamed prose accumulates in the draft buffer, rendered as the
-          // live bubble; mark streaming so the composer locks and UI shows it.
+          // live GM block; mark streaming so the composer locks and UI shows
+          // the typing indicator.
           store.appendDelta(campaignId, event.delta)
           store.setStreaming(campaignId, true)
           break
@@ -228,8 +223,8 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
     // scrollTo snaps the viewport to the last rendered message.
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
     // Deps: scrolling must re-run on any of the three states that change the
-    // transcript — persisted messages, the streaming draft, and the spinner
-    // row that appears/disappears with the streaming flag.
+    // transcript — persisted messages, the streaming draft, and the typing
+    // indicator that appears/disappears with the streaming flag.
   }, [messages, draft, streaming])
 
   async function handleSend() {
@@ -263,88 +258,100 @@ export function ChatScreen({ campaignId }: { campaignId: string }) {
 
   return (
     // The screen is a full-height column: transcript above, composer pinned
-    // at the bottom with a hairline separating the two zones.
-    <div className="col" style={{ height: "100%" }}>
+    // at the bottom with a hairline separating the two zones. flex:1 (not
+    // height:100%) lets it grow as the stage's flex child under the top bar.
+    <div className="col" style={{ flex: 1, minHeight: 0 }}>
       {/* The scrollable transcript area; `grow` makes it fill all space
           above the composer so the composer never floats mid-window. */}
-      <div ref={scrollRef} className="col grow" style={{ overflowY: "auto", padding: "16px 8px" }}>
-        {/* Empty state: only when there is neither transcript nor draft —
-            a brand-new campaign starts with this nudge to speak first. */}
-        {messages.length === 0 && !draft ? (
-          <p className="muted" style={{ margin: "auto", textAlign: "center" }}>
-            The world is quiet. Say something to begin the roleplay.
-          </p>
-        ) : (
-          // One bubble per persisted message; id is the stable reconciliation
-          // key, so re-renders never lose scroll or animate existing rows.
-          messages.map((message) => <MessageBubble key={message.id} message={message} />)
-        )}
-
-        {/* Live streaming bubble: rendered only while a turn is in flight
-            with buffered text — the draft replaces the empty-state nudge. */}
-        {streaming && draft ? (
-          <div className="col" style={{ alignItems: "flex-start", gap: 4 }}>
-            <span className="faint">GM</span>
-            <div className="card">
-              {/* The blinking caret marks this bubble as live/in-progress,
-                  distinct from the settled message bubbles above. */}
-              <span className="blink-caret" style={{ whiteSpace: "pre-wrap" }}>
-                {draft}
-              </span>
+      <div className="transcript" ref={scrollRef}>
+        <div className="transcript-inner">
+          {/* Empty state: only when there is neither transcript nor draft —
+              a brand-new campaign starts with this quiet nudge to act. */}
+          {messages.length === 0 && !draft ? (
+            <div className="empty-transcript">
+              <p style={{ margin: "0 0 6px" }}>
+                <strong>The world is quiet.</strong>
+              </p>
+              <p style={{ margin: 0 }}>Type an action to begin the roleplay.</p>
             </div>
-          </div>
-        ) : null}
+          ) : (
+            // One bubble per persisted message; id is the stable
+            // reconciliation key, so re-renders never lose scroll or animate
+            // existing rows.
+            messages.map((message) => <MessageBubble key={message.id} message={message} />)
+          )}
 
-        {/* Transient status line (tool activity) only during a live turn. */}
-        {streaming && activity ? <p className="faint">… {activity}</p> : null}
+          {/* Live streaming block: rendered only while a turn is in flight
+              with buffered text — the draft replaces the empty-state nudge.
+              Rendered with the same full-width GM stripe as settled narration
+              so streaming reads as "the GM is still writing this". */}
+          {streaming && draft ? (
+            <div className="msg msg-gm">
+              <span className="msg-label">GM</span>
+              {/* The blinking caret marks this block as live/in-progress,
+                  distinct from the settled message blocks above. */}
+              <div className="msg-body blink-caret">{draft}</div>
+            </div>
+          ) : null}
 
-        {/* The last error shows inside the transcript so it is contextual,
-            not a toast that could be missed. */}
-        {error ? <span className="badge badge-danger">{error}</span> : null}
+          {/* Transient status line (tool activity) only during a live turn. */}
+          {streaming && activity ? <p className="faint">… {activity}</p> : null}
+
+          {/* The last error shows inside the transcript so it is contextual,
+              not a toast that could be missed. */}
+          {error ? <span className="badge badge-danger">{error}</span> : null}
+        </div>
       </div>
 
       {/* Composer dock: a bordered strip that stays put while the transcript
-          above scrolls freely. */}
-      <div className="col" style={{ borderTop: "1px solid var(--border)", padding: 12, gap: 8 }}>
-        {/* During a turn the composer collapses to a status row with Stop —
-            replacing the input keeps the user's focus on the live state. */}
-        {streaming ? (
-          <div className="row">
-            <Spinner label="The GM is writing..." />
-            {/* Abort path: the backend fires a follow-up event that finally
-                resets streaming, so this button only needs to request it. */}
-            <Button variant="ghost" onClick={() => cancelTurn(campaignId)}>
-              Stop
+          above scrolls freely; its content is centered to the 720px measure. */}
+      <div className="composer-dock">
+        <div className="composer">
+          {/* During a turn the composer collapses to a quiet typing line with
+              Stop — replacing the input keeps the user's focus on the live
+              state without a heavy spinner. */}
+          {streaming ? (
+            <div className="typing-line">
+              {/* The pulsing dot is the whole "writing" indicator. */}
+              <span className="typing-dot" aria-hidden="true" />
+              <span>{activity ? activity : "The GM is writing…"}</span>
+              {/* Abort path: the backend fires a follow-up event that finally
+                  resets streaming, so this button only needs to request it. */}
+              <Button variant="ghost" onClick={() => cancelTurn(campaignId)}>
+                Stop
+              </Button>
+            </div>
+          ) : null}
+          <div className="composer-row">
+            {/* Controlled textarea; .grow stretches it to share the row with
+                the send button instead of wrapping onto a new line. The
+                placeholder sets the roleplay tone — this is an action prompt,
+                not a messaging box. */}
+            <textarea
+              className="textarea grow"
+              rows={2}
+              placeholder="Describe your action…"
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              // Enter sends, Shift+Enter inserts a newline — the standard chat
+              // affordance; preventDefault stops the textarea from swallowing
+              // the keystroke as a newline.
+              onKeyDown={(event) => {
+                // Bare Enter (no Shift) is the send gesture; anything else
+                // (Shift+Enter, arrows, IME composition) falls through to the
+                // textarea's default behavior.
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault()
+                  handleSend()
+                }
+              }}
+            />
+            {/* Disabled when empty or streaming — the same two guards as
+                handleSend, surfaced as a visible affordance hint. */}
+            <Button variant="primary" onClick={handleSend} disabled={!input.trim() || streaming}>
+              Send
             </Button>
           </div>
-        ) : null}
-        <div className="row">
-          {/* Controlled textarea; .grow stretches it to share the row with
-              the send button instead of wrapping onto a new line. */}
-          <textarea
-            className="textarea grow"
-            rows={3}
-            placeholder="Describe what your character does..."
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            // Enter sends, Shift+Enter inserts a newline — the standard chat
-            // affordance; preventDefault stops the textarea from swallowing
-            // the keystroke as a newline.
-            onKeyDown={(event) => {
-              // Bare Enter (no Shift) is the send gesture; anything else
-              // (Shift+Enter, arrows, IME composition) falls through to the
-              // textarea's default behavior.
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault()
-                handleSend()
-              }
-            }}
-          />
-          {/* Disabled when empty or streaming — the same two guards as
-              handleSend, surfaced as a visible affordance hint. */}
-          <Button variant="primary" onClick={handleSend} disabled={!input.trim() || streaming}>
-            Send
-          </Button>
         </div>
       </div>
     </div>

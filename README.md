@@ -38,6 +38,10 @@ data, the database is the truth.
   columns plus migrations, so new data shapes never need schema churn.
 - **World state** with an audit trail of every GM mutation.
 - **Memories** and **full-text search** (SQLite FTS5) over the history.
+- **A chat-first UI**: pick a campaign on the lobby, then play inside a
+  full-window chat (GM narration reads as full-width prose, your actions as
+  right-aligned bubbles). World state, memories, and the audit trail stay out
+  of the way behind a "Debug" drawer toggle.
 - **A full app UI** (React) plus a typed IPC contract in one place.
 - Secrets stay in the OS keyring; keys are never stored in the DB.
 
