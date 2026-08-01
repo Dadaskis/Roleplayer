@@ -270,6 +270,7 @@ Provider-specific types must never leak outside a provider adapter. If you catch
 ### Git
 - Conventional Commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`. Imperative mood, subject ≤ 72 chars.
 - **Every change is committed with a detailed description.** The body must explain the *why* (motivation, trade-offs, design decisions), not just restate the diff. Never commit without a body — commit message is mandatory documentation.
+- **Messages describe the change, not its requester.** State the motivation in terms of the code/design/repo state ("the sidebar made the app feel like a dashboard"), never attribute it to who asked for it ("the user wanted…", "requested by…", "per feedback"). If a requirement came from outside the code, frame it as the problem the change solves.
 - Commit bodies state **how the change was verified** (which tests/checks ran and passed), so any commit in history is independently checkable — the history is a debugging tool, not decoration.
 - **Preserve the record on merge**: land PRs with rebase-merge or a merge commit — never squash, it collapses the detailed history this repo relies on for debugging (§5.9).
 - Small, focused commits. One logical change per commit.
